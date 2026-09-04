@@ -7,11 +7,261 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum Availability {
+  AVAILABLE
+  PARTIALLY_AVAILABLE
+  BUSY
+  ON_LEAVE
+  INACTIVE
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  REVIEW
+  COMPLETED
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERN
+  FREELANCE
+}
+
+model Department {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  people      Person[]
+  tasks       Task[]
+}
+
+model Person {
+  id               Int          @id @default(autoincrement())
+  fullName         String
+  email            String       @unique
+  phone            String?
+  profileImage     String?
+  location         String?
+  jobTitle         String?
+  role             String?
+  experience       Int          @default(0)
+  employmentType   EmploymentType @default(FULL_TIME)
+  joiningDate      DateTime?
+  availability     Availability @default(AVAILABLE)
+  bio              String?
+  notes            String?
+  preferredTaskTypes String?
+  isActive         Boolean      @default(true)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  departmentId     Int?
+  department       Department?  @relation(fields: [departmentId], references: [id])
+
+  skills           PersonSkill[]
+  assignedTasks    TaskAssignee[]
+  managedProjects  Project[]    @relation("ProjectManager")
+  projectMembers   ProjectMember[]
+  activities       ActivityLog[]
+
+  @@index([departmentId])
+  @@index([availability])
+  @@index([isActive])
+}
+
+model Skill {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  description String?
+  createdAt   DateTime     @default(now())
+
+  people      PersonSkill[]
+  tasks       TaskSkill[]
+}
+
+model PersonSkill {
+  personId Int
+  skillId  Int
+
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+  skill  Skill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([personId, skillId])
+}
+
+model Project {
+  id             Int           @id @default(autoincrement())
+  name           String
+  description    String?
+  client         String?
+  startDate      DateTime?
+  dueDate        DateTime?
+  status         ProjectStatus  @default(PLANNING)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  managerId      Int?
+  manager        Person?       @relation("ProjectManager", fields: [managerId], references: [id])
+
+  members        ProjectMember[]
+  tasks          Task[]
+
+  @@index([status])
+}
+
+model ProjectMember {
+  projectId Int
+  personId  Int
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  person  Person  @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, personId])
+}
+
 model Task {
-  id          Int      @id @default(autoincrement())
+  id          Int        @id @default(autoincrement())
   title       String
   description String?
-  completed   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+
+  completed   Boolean    @default(false)
+
+  status      TaskStatus @default(TODO)
+  priority    Priority   @default(MEDIUM)
+
+  taskType    String?
+
+  startDate   DateTime?
+  dueDate     DateTime?
+
+  estimatedHours Float?
+  actualHours    Float?
+
+  labels      String?
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  projectId   Int?
+  project     Project?   @relation(fields: [projectId], references: [id])
+
+  departmentId Int?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  skills      TaskSkill[]
+  assignees   TaskAssignee[]
+  comments    Comment[]
+  checklist   ChecklistItem[]
+  activities  ActivityLog[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([projectId])
+  @@index([departmentId])
+}
+
+model TaskSkill {
+  taskId  Int
+  skillId Int
+
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, skillId])
+}
+
+model TaskAssignee {
+  taskId   Int
+  personId Int
+
+  assignedAt DateTime @default(now())
+
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, personId])
+}
+
+model Comment {
+  id        Int      @id @default(autoincrement())
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+model ChecklistItem {
+  id        Int      @id @default(autoincrement())
+  title     String
+  completed Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+
+  action    String
+  entity    String
+  details   String?
+
+  isAI      Boolean  @default(false)
+  aiReason  String?
+
+  createdAt DateTime @default(now())
+
+  personId  Int?
+  person    Person?  @relation(fields: [personId], references: [id])
+
+  taskId    Int?
+  task      Task?    @relation(fields: [taskId], references: [id])
+
+  @@index([entity])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model AIConversation {
+  id        Int          @id @default(autoincrement())
+  title     String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  messages  AIMessage[]
+}
+
+model AIMessage {
+  id             Int             @id @default(autoincrement())
+  role           String
+  content        String
+  createdAt      DateTime        @default(now())
+
+  conversationId Int
+  conversation   AIConversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 }

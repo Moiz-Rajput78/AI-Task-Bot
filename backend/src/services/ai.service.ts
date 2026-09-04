@@ -1,13 +1,22 @@
 const model = process.env.OLLAMA_MODEL || "gpt-oss:120b";
 
-export async function generateAIResponse(prompt: string): Promise<string> {
+export async function generateAIResponse(
+  prompt: string
+): Promise<string> {
   const apiKey = process.env.OLLAMA_API_KEY;
 
   if (!apiKey) {
-    throw new Error("OLLAMA_API_KEY is not configured");
+    throw new Error(
+      "OLLAMA_API_KEY is not configured in the backend environment."
+    );
   }
 
-  const baseUrl = process.env.OLLAMA_BASE_URL || "https://ollama.com";
+  if (!prompt || !prompt.trim()) {
+    throw new Error("AI prompt cannot be empty.");
+  }
+
+  const baseUrl =
+    process.env.OLLAMA_BASE_URL || "https://ollama.com";
 
   const response = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
@@ -27,14 +36,35 @@ export async function generateAIResponse(prompt: string): Promise<string> {
     }),
   });
 
+  const responseText = await response.text();
+
   if (!response.ok) {
-    const errorText = await response.text();
     throw new Error(
-      `Ollama API error (${response.status}): ${errorText}`
+      `Ollama API error (${response.status}): ${responseText}`
     );
   }
 
-  const data = await response.json();
+  let data: {
+    message?: {
+      content?: string;
+    };
+  };
 
-  return data.message?.content || "No response received from AI";
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    throw new Error(
+      `Ollama API returned invalid JSON: ${responseText}`
+    );
+  }
+
+  const content = data.message?.content;
+
+  if (!content || typeof content !== "string") {
+    throw new Error(
+      "Ollama API returned successfully, but no AI message content was found."
+    );
+  }
+
+  return content.trim();
 }
