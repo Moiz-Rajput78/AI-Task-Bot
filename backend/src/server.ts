@@ -23,12 +23,8 @@ import peopleRouter from "./routes/people.routes";
 import tasksRouter from "./routes/tasks.routes";
 import assignmentRouter from "./routes/assignment.routes";
 import projectsRouter from "./routes/projects.routes";
-import dashboardRouter from "./routes/dashboard.routes";
-import searchRouter from "./routes/search.routes";
-import activityRouter from "./routes/activity.routes";
 
 import { generateAIResponse } from "./services/ai.service";
-import { classifyIntent } from "./ai/intent.service";
 
 const app = express();
 
@@ -86,9 +82,6 @@ app.use("/api/people", peopleRouter);
 app.use("/api/tasks", tasksRouter);
 app.use("/api/assignments", assignmentRouter);
 app.use("/api/projects", projectsRouter);
-app.use("/api/dashboard", dashboardRouter);
-app.use("/api/search", searchRouter);
-app.use("/api/activity", activityRouter);
 
 /* -------------------------------------------------------------------------- */
 /* GENERAL HELPERS                                                            */
@@ -597,6 +590,45 @@ async function findPersonByName(
 /* PERSON QUERY DETECTION                                                     */
 /* -------------------------------------------------------------------------- */
 
+function isAllPeopleQueryRequest(message: string): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const normalized = text
+    .replace(/^[?!.]+|[?!.]+$/g, "")
+    .trim();
+
+  const patterns = [
+    /^(?:show|list|display) (?:me |us )?(?:our |the |all )?(?:team )?(?:members|people|employees|staff)$/,
+    /^(?:show|list|display) (?:me |us )?(?:all )?(?:the )?(?:team )?(?:members|people|employees|staff)$/,
+    /^(?:who are|who is) (?:all )?(?:our |the )?(?:team )?(?:members|people|employees|staff)$/,
+    /^(?:who are|who is) (?:all )?(?:the )?(?:members|people|employees|staff) (?:on|in) (?:the )?team$/,
+    /^(?:show|list|display) (?:all )?(?:the )?(?:members|people|employees|staff) (?:present )?(?:in|on) (?:the )?team$/,
+    /^(?:show|list|display) (?:all )?(?:the )?(?:team )?(?:members|people|employees|staff) (?:present|available)$/,
+  ];
+
+  return patterns.some((pattern) => pattern.test(normalized));
+}
+
+function isTeamSkillsQueryRequest(message: string): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const patterns = [
+    /\b(?:show|list|display|give|tell)(?:\s+me)?\s+(?:our|the)?\s*team(?:'s|’s)?\s+skills\b/i,
+    /\bwhat\s+skills\s+(?:does|do)\s+(?:our|the)\s+team\s+have\b/i,
+    /\bwhat\s+are\s+(?:our|the)\s+team(?:'s|’s)?\s+skills\b/i,
+    /\bskills\s+(?:of|for)\s+(?:our|the)\s+team\b/i,
+    /\b(?:our|the)\s+team(?:'s|’s)?\s+skills\b/i,
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
+}
+
 function isPersonQueryRequest(message: string): boolean {
   const text = message
     .toLowerCase()
@@ -604,6 +636,10 @@ function isPersonQueryRequest(message: string): boolean {
     .trim();
 
   if (isPersonCreationRequest(message)) {
+    return false;
+  }
+
+  if (isTeamSkillsQueryRequest(message)) {
     return false;
   }
 
@@ -668,7 +704,7 @@ function extractPersonQueryName(
 ): string | null {
   const patterns = [
     /\b(?:details|detail|information|info)\s+(?:of|about|for)\s+(.+?)(?:\?|$)/i,
-    /\b(?:show|tell me about)\s+(.+?)(?:'s|\s+details|\s+information)?(?:\?|$)/i,
+    /\b(?:show|tell me about)\s+(?:(?:me|us)\s+)?(?:(?:our|the|all)\s+)?(.+?)(?:'s|\s+details|\s+information)?(?:\?|$)/i,
     /\bwhat\s+skills\s+(?:does|do)\s+(.+?)\s+have(?:\?|$)/i,
     /\bwhich\s+department\s+is\s+(.+?)\s+in(?:\?|$)/i,
     /\bwho\s+works\s+in\s+(.+?)(?:\?|$)/i,
@@ -1634,18 +1670,24 @@ function isProjectUpdateRequest(message: string): boolean {
 function isProjectMemberRequest(message: string): boolean {
   const text = message.toLowerCase().replace(/\s+/g, " ").trim();
 
-  if (isProjectCreationRequest(message) || isTaskCreationRequest(message) || isTaskUpdateRequest(message)) {
+  if (
+    isProjectCreationRequest(message) ||
+    isTaskCreationRequest(message) ||
+    isTaskUpdateRequest(message) ||
+    isPersonCreationRequest(message) ||
+    /\bskills?\b/i.test(text)
+  ) {
     return false;
   }
 
-  return [
-    /\badd\b.+\bto\b.+\bproject\b/i,
-    /\badd\b.+\bto\b.+$/i,
-    /\bremove\b.+\bfrom\b.+\bproject\b/i,
-    /\bremove\b.+\bfrom\b.+$/i,
-  ].some((pattern) => pattern.test(text)) &&
-    !isPersonCreationRequest(message) &&
-    !/\bskills?\b/i.test(text);
+  const patterns = [
+    /\badd\b.+\b(?:to|into)\b(?:\s+the)?\s+(?:project\s+)?[^?!.]+(?:\s+project)?[?!.]?$/i,
+    /\badd\b.+\bas\s+(?:a\s+)?member\s+of\b.+$/i,
+    /\bremove\b.+\bfrom\b(?:\s+the)?\s+(?:project\s+)?[^?!.]+(?:\s+project)?[?!.]?$/i,
+    /\bremove\b.+\bas\s+(?:a\s+)?member\s+of\b.+$/i,
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 function isProjectManagerQueryRequest(message: string): boolean {
@@ -1670,7 +1712,6 @@ function extractProjectManagementName(message: string): string | null {
     /\b(?:change|update|set)\s+(.+?)\s+due\s+date\s+to\s+/i,
     /\b(?:change|update|set)\s+(?:the\s+)?manager\s+of\s+(.+?)\s+to\s+/i,
     /\bset\s+(.+?)\s+as\s+manager\s+of\s+(.+?)(?:\?|$)/i,
-    /\b(?:add|remove)\s+.+?\s+(?:to|from)\s+(.+?)(?:\s+project)?(?:\?|$)/i,
   ];
 
   for (const pattern of patterns) {
@@ -1690,46 +1731,46 @@ function extractProjectManagementName(message: string): string | null {
   return null;
 }
 
-function extractProjectMemberPersonName(message: string): string | null {
+function cleanProjectReference(value: string): string {
+  return value
+    .trim()
+    .replace(/^the\s+/i, "")
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\s+project$/i, "")
+    .replace(/[?!.]+$/, "")
+    .trim();
+}
+
+function extractProjectMemberParts(
+  message: string
+): { personName: string; projectName: string } | null {
   const patterns = [
-    /\badd\s+(.+?)\s+to\s+.+?(?:\s+project)?(?:\?|$)/i,
-    /\bremove\s+(.+?)\s+from\s+.+?(?:\s+project)?(?:\?|$)/i,
+    /\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:project\s+)?(.+?)(?:\s+project)?[?!.]?$/i,
+    /\bremove\s+(.+?)\s+from\s+(?:the\s+)?(?:project\s+)?(.+?)(?:\s+project)?[?!.]?$/i,
+    /\badd\s+(.+?)\s+as\s+(?:a\s+)?member\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)[?!.]?$/i,
+    /\bremove\s+(.+?)\s+as\s+(?:a\s+)?member\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)[?!.]?$/i,
   ];
 
   for (const pattern of patterns) {
     const match = message.match(pattern);
-    if (match?.[1]) {
-      return match[1]
-        .trim()
-        .replace(/^['"]|['"]$/g, "")
-        .replace(/[?!.]+$/, "")
-        .trim();
+    if (match?.[1] && match?.[2]) {
+      const personName = cleanProjectReference(match[1]);
+      const projectName = cleanProjectReference(match[2]);
+      if (personName && projectName) {
+        return { personName, projectName };
+      }
     }
   }
 
   return null;
 }
 
+function extractProjectMemberPersonName(message: string): string | null {
+  return extractProjectMemberParts(message)?.personName || null;
+}
+
 function extractProjectMemberProjectName(message: string): string | null {
-  const patterns = [
-    /\badd\s+.+?\s+to\s+(.+?)(?:\s+project)?(?:\?|$)/i,
-    /\bremove\s+.+?\s+from\s+(.+?)(?:\s+project)?(?:\?|$)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    if (match?.[1]) {
-      return match[1]
-        .trim()
-        .replace(/^the\s+/i, "")
-        .replace(/\s+project$/i, "")
-        .replace(/^['"]|['"]$/g, "")
-        .replace(/[?!.]+$/, "")
-        .trim();
-    }
-  }
-
-  return null;
+  return extractProjectMemberParts(message)?.projectName || null;
 }
 
 function extractProjectManagerPersonName(message: string): string | null {
@@ -2792,11 +2833,6 @@ function extractTaskStatus(
     return "IN_PROGRESS";
   }
 
-  // NOTE: "blocked" is not a supported TaskStatus in the Prisma schema
-  // (BACKLOG | TODO | IN_PROGRESS | REVIEW | COMPLETED). Intentionally
-  // not mapped here — falls through so the caller can ask the user to
-  // pick one of the supported statuses instead of silently miscategorizing.
-
   if (
     text.includes("todo") ||
     text.includes("to do") ||
@@ -2946,49 +2982,43 @@ function extractTaskUpdateDepartmentName(
 function parseTaskDueDate(
   message: string
 ): Date | null {
-  const text = message
-    .replace(/\s+/g, " ")
-    .trim();
-
   const patterns = [
-    /\b(?:due date|duedate)\s+(?:to|as)\s+(.+?)(?:\?|$)/i,
-    /\bdue\s+(?:on|by|to)\s+(.+?)(?:\?|$)/i,
-    /\b(?:set|change|update|modify)\s+(?:the\s+)?due\s+date(?:\s+of\s+task\s+(?:with\s+)?id\s*[:#]?\s*\d+)?\s+to\s+(.+?)(?:\?|$)/i,
+    /\b(?:due date|duedate)\s+(?:to\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})/i,
+    /\bdue\s+(?:on|by)\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i,
+    /\b(?:due date|duedate)\s+(?:to\s+)?(\d{4}-\d{2}-\d{2})/i,
+    /\bdue\s+(?:on|by)\s+(\d{4}-\d{2}-\d{2})/i,
+    /\b(?:due date|duedate)\s+(?:to\s+)?(\d{1,2}\/\d{1,2}\/\d{4})/i,
+    /\bdue\s+(?:on|by)\s+(\d{1,2}\/\d{1,2}\/\d{4})/i,
+    /\b(?:due date|duedate)\s+(?:to\s+)?([A-Za-z]+\s+\d{1,2})\b/i,
+    /\bdue\s+(?:on|by)\s+([A-Za-z]+\s+\d{1,2})\b/i,
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match =
+      message.match(pattern);
 
-    if (!match?.[1]) {
-      continue;
-    }
+    if (match?.[1]) {
+      let dateText =
+        match[1].trim();
 
-    let dateText = match[1]
-      .trim()
-      .replace(/[?!.]+$/, "")
-      .trim();
+      if (
+        /^[A-Za-z]+\s+\d{1,2}$/i.test(
+          dateText
+        )
+      ) {
+        dateText = `${dateText}, ${new Date().getFullYear()}`;
+      }
 
-    // Normalize common forms such as:
-    // 6 sep 2026
-    // 6 september 2026
-    // Sep 6 2026
-    // September 6, 2026
-    // 2026-09-06
-    // 09/06/2026
-    dateText = dateText.replace(
-      /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/i,
-      "$2 $1, $3"
-    );
+      const date =
+        new Date(dateText);
 
-    dateText = dateText.replace(
-      /^([A-Za-z]+)\s+(\d{1,2})\s+(\d{4})$/i,
-      "$1 $2, $3"
-    );
-
-    const parsed = new Date(dateText);
-
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed;
+      if (
+        !Number.isNaN(
+          date.getTime()
+        )
+      ) {
+        return date;
+      }
     }
   }
 
@@ -4194,28 +4224,10 @@ app.post(
       }
 
       /* ------------------------------------------------------------------ */
-      /* LLM INTENT CLASSIFICATION                                          */
-      /*                                                                    */
-      /* Ollama classifies the message into one of the application's known */
-      /* intents. This runs ONLY once we've established there is no        */
-      /* pending confirmation/cancellation to handle above. The result is  */
-      /* OR'd into each existing regex gate below — if classification      */
-      /* fails or returns something unexpected, llmIntent is "UNKNOWN" and */
-      /* every gate falls back to its original regex-only behavior.        */
-      /* ------------------------------------------------------------------ */
-
-      const llmIntent = await classifyIntent(message, {
-        hasPendingPerson: Boolean(pendingPerson),
-        hasPendingTask: Boolean(pendingTask),
-        hasPendingProject: Boolean(pendingProject),
-      });
-
-      /* ------------------------------------------------------------------ */
       /* START PERSON CREATION                                              */
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "PERSON_CREATE" ||
         isPersonCreationRequest(
           message
         )
@@ -4264,7 +4276,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "PERSON_UPDATE" ||
         isPersonUpdateRequest(
           message
         )
@@ -4297,11 +4308,90 @@ app.post(
       }
 
       /* ------------------------------------------------------------------ */
+      /* TEAM SKILLS QUERY                                                  */
+      /* ------------------------------------------------------------------ */
+
+      if (isTeamSkillsQueryRequest(message)) {
+        const teamMembers = await prisma.person.findMany({
+          where: { isActive: true },
+          include: {
+            skills: {
+              include: { skill: true },
+            },
+          },
+          orderBy: { fullName: "asc" },
+        });
+
+        const skillMap = new Map<number, {
+          id: number;
+          name: string;
+          members: string[];
+        }>();
+
+        for (const person of teamMembers) {
+          for (const personSkill of person.skills) {
+            const skill = personSkill.skill;
+            let entry = skillMap.get(skill.id);
+
+            if (!entry) {
+              entry = { id: skill.id, name: skill.name, members: [] };
+              skillMap.set(skill.id, entry);
+            }
+
+            if (!entry.members.includes(person.fullName)) {
+              entry.members.push(person.fullName);
+            }
+          }
+        }
+
+        const teamSkills = Array.from(skillMap.values()).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+
+        if (teamSkills.length === 0) {
+          return res.json({
+            success: true,
+            data: {
+              reply: teamMembers.length === 0
+                ? "There are currently no active team members with skills in the system."
+                : "No skills are currently assigned to the active team members.",
+              intent: "TEAM_SKILLS_QUERY",
+              requiresConfirmation: false,
+              skills: [],
+            },
+          });
+        }
+
+        const rows = teamSkills.map(
+          (skill) =>
+            `| ${skill.name} | ${skill.members.length} | ${skill.members.join(", ")} |`
+        );
+
+        const reply = [
+          "### 🧩 Team Skills",
+          "",
+          `I found **${teamSkills.length}** skill(s) across the active team.`,
+          "",
+          "| Skill | Team Members | Members |",
+          "| --- | ---: | --- |",
+          ...rows,
+        ].join("\n");
+
+        return res.json({
+          success: true,
+          data: {
+            reply,
+            intent: "TEAM_SKILLS_QUERY",
+            requiresConfirmation: false,
+            skills: teamSkills,
+          },
+        });
+      }
+
       /* PERSON QUERIES                                                      */
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "PERSON_QUERY" ||
         isPersonQueryRequest(
           message
         )
@@ -4309,10 +4399,11 @@ app.post(
         const text =
           message.toLowerCase();
 
-        const personName =
-          extractPersonQueryName(
-            message
-          );
+        const allPeopleQuery = isAllPeopleQueryRequest(message);
+
+        const personName = allPeopleQuery
+          ? null
+          : extractPersonQueryName(message);
 
         /* -------------------------------------------------------------- */
         /* ALL PEOPLE                                                       */
@@ -4321,6 +4412,7 @@ app.post(
         if (
           !personName &&
           (
+            allPeopleQuery ||
             text.includes("all team") ||
             text.includes("all people") ||
             text.includes("all members") ||
@@ -4916,10 +5008,9 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        (llmIntent === "AVAILABILITY_QUERY" ||
-          isAvailabilityRequest(
-            message
-          )) &&
+        isAvailabilityRequest(
+          message
+        ) &&
         !extractTaskId(message)
       ) {
         const members =
@@ -5014,10 +5105,7 @@ app.post(
       /* PROJECT MANAGER / MEMBER UPDATES                                   */
       /* ------------------------------------------------------------------ */
 
-      if (
-        llmIntent === "PROJECT_MEMBER_UPDATE" ||
-        isProjectMemberRequest(message)
-      ) {
+      if (isProjectMemberRequest(message)) {
         const action = await prepareProjectMemberAction(message);
 
         pendingProjectMemberActions.set(
@@ -5050,10 +5138,7 @@ app.post(
         });
       }
 
-      if (
-        llmIntent === "PROJECT_UPDATE" ||
-        isProjectUpdateRequest(message)
-      ) {
+      if (isProjectUpdateRequest(message)) {
         const action = await prepareProjectUpdate(message);
 
         const project = await getProjectForManagement(
@@ -5100,7 +5185,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "PROJECT_CREATE" ||
         isProjectCreationRequest(
           message
         )
@@ -5194,7 +5278,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "PROJECT_MEMBER_QUERY" ||
         isProjectMemberQueryRequest(message) ||
         isProjectManagerQueryRequest(message)
       ) {
@@ -5214,25 +5297,21 @@ app.post(
           });
         }
 
-        const project = await prisma.project.findFirst({
-          where: {
-            name: {
-              contains: projectName,
-              // NOTE: `mode: "insensitive"` is not supported by SQLite in
-              // Prisma and throws at runtime. SQLite's default `contains`
-              // is already case-insensitive for ASCII text, so it's safe
-              // to omit here.
-            },
-          },
-          include: {
-            manager: true,
-            members: {
+        const projectBase = await findProjectByName(projectName);
+
+        const project = projectBase
+          ? await prisma.project.findUnique({
+              where: { id: projectBase.id },
               include: {
-                person: true,
+                manager: true,
+                members: {
+                  include: {
+                    person: true,
+                  },
+                },
               },
-            },
-          },
-        });
+            })
+          : null;
 
         if (!project) {
           return res.json({
@@ -5288,7 +5367,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "PROJECT_QUERY" ||
         isProjectQueryRequest(
           message
         )
@@ -5301,11 +5379,11 @@ app.post(
         if (!projectName) {
           const allProjects =
             await prisma.project.findMany({
-              orderBy: {
-                name: "asc",
-              },
               include: {
                 manager: true,
+              },
+              orderBy: {
+                name: "asc",
               },
             });
 
@@ -5392,25 +5470,23 @@ app.post(
           });
         }
 
-        const project =
-          projectName
-            ? await prisma.project.findFirst({
-                where: {
-                  name: {
-                    contains: projectName,
-                    // See note above: SQLite doesn't support mode: "insensitive".
+        const projectBase = projectName
+          ? await findProjectByName(projectName)
+          : null;
+
+        const project = projectBase
+          ? await prisma.project.findUnique({
+              where: { id: projectBase.id },
+              include: {
+                manager: true,
+                members: {
+                  include: {
+                    person: true,
                   },
                 },
-                include: {
-                  manager: true,
-                  members: {
-                    include: {
-                      person: true,
-                    },
-                  },
-                },
-              })
-            : null;
+              },
+            })
+          : null;
 
         if (!project) {
           return res.json({
@@ -5567,7 +5643,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "TASK_UPDATE" ||
         isTaskUpdateRequest(
           message
         )
@@ -5604,7 +5679,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "TASK_QUERY" ||
         isTaskQueryRequest(
           message
         )
@@ -5895,7 +5969,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "TASK_CREATE" ||
         isTaskCreationRequest(
           message
         )
@@ -5978,7 +6051,6 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        llmIntent === "ASSIGNMENT_RECOMMEND" ||
         isAssignmentRequest(
           message
         )
