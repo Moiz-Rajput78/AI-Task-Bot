@@ -957,13 +957,23 @@ router.put("/:id", async (req, res) => {
       }
 
       if (skillsToAdd.length > 0) {
-        await prisma.personSkill.createMany({
-          data: skillsToAdd.map((skillId) => ({
-            personId: id,
-            skillId,
-          })),
-          skipDuplicates: true,
-        });
+        // SQLite does not support `skipDuplicates` on createMany,
+        // so relationship rows are created individually instead.
+        for (const skillId of skillsToAdd) {
+          await prisma.personSkill.upsert({
+            where: {
+              personId_skillId: {
+                personId: id,
+                skillId,
+              },
+            },
+            update: {},
+            create: {
+              personId: id,
+              skillId,
+            },
+          });
+        }
 
         for (const skillId of skillsToAdd) {
           const skill =

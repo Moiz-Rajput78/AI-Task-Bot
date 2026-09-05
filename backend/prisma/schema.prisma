@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -58,33 +58,33 @@ model Department {
 }
 
 model Person {
-  id               Int          @id @default(autoincrement())
-  fullName         String
-  email            String       @unique
-  phone            String?
-  profileImage     String?
-  location         String?
-  jobTitle         String?
-  role             String?
-  experience       Int          @default(0)
-  employmentType   EmploymentType @default(FULL_TIME)
-  joiningDate      DateTime?
-  availability     Availability @default(AVAILABLE)
-  bio              String?
-  notes            String?
-  preferredTaskTypes String?
-  isActive         Boolean      @default(true)
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  id                  Int            @id @default(autoincrement())
+  fullName            String
+  email               String         @unique
+  phone               String?
+  profileImage        String?
+  location            String?
+  jobTitle            String?
+  role                String?
+  experience          Int            @default(0)
+  employmentType      EmploymentType @default(FULL_TIME)
+  joiningDate         DateTime?
+  availability        Availability   @default(AVAILABLE)
+  bio                 String?
+  notes               String?
+  preferredTaskTypes  String?
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
-  departmentId     Int?
-  department       Department?  @relation(fields: [departmentId], references: [id])
+  departmentId        Int?
+  department          Department?    @relation(fields: [departmentId], references: [id])
 
-  skills           PersonSkill[]
-  assignedTasks    TaskAssignee[]
-  managedProjects  Project[]    @relation("ProjectManager")
-  projectMembers   ProjectMember[]
-  activities       ActivityLog[]
+  skills              PersonSkill[]
+  assignedTasks       TaskAssignee[]
+  managedProjects     Project[]      @relation("ProjectManager")
+  projectMembers      ProjectMember[]
+  activities          ActivityLog[]
 
   @@index([departmentId])
   @@index([availability])
@@ -112,21 +112,21 @@ model PersonSkill {
 }
 
 model Project {
-  id             Int           @id @default(autoincrement())
-  name           String
-  description    String?
-  client         String?
-  startDate      DateTime?
-  dueDate        DateTime?
-  status         ProjectStatus  @default(PLANNING)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id          Int           @id @default(autoincrement())
+  name        String
+  description String?
+  client      String?
+  startDate   DateTime?
+  dueDate     DateTime?
+  status      ProjectStatus  @default(PLANNING)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
-  managerId      Int?
-  manager        Person?       @relation("ProjectManager", fields: [managerId], references: [id])
+  managerId   Int?
+  manager     Person?       @relation("ProjectManager", fields: [managerId], references: [id])
 
-  members        ProjectMember[]
-  tasks          Task[]
+  members     ProjectMember[]
+  tasks       Task[]
 
   @@index([status])
 }
@@ -142,39 +142,39 @@ model ProjectMember {
 }
 
 model Task {
-  id          Int        @id @default(autoincrement())
-  title       String
-  description String?
+  id              Int        @id @default(autoincrement())
+  title           String
+  description     String?
 
-  completed   Boolean    @default(false)
+  completed       Boolean    @default(false)
 
-  status      TaskStatus @default(TODO)
-  priority    Priority   @default(MEDIUM)
+  status          TaskStatus @default(TODO)
+  priority        Priority   @default(MEDIUM)
 
-  taskType    String?
+  taskType        String?
 
-  startDate   DateTime?
-  dueDate     DateTime?
+  startDate       DateTime?
+  dueDate         DateTime?
 
-  estimatedHours Float?
-  actualHours    Float?
+  estimatedHours  Float?
+  actualHours     Float?
 
-  labels      String?
+  labels          String?
 
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
-  projectId   Int?
-  project     Project?   @relation(fields: [projectId], references: [id])
+  projectId       Int?
+  project         Project?   @relation(fields: [projectId], references: [id])
 
-  departmentId Int?
-  department   Department? @relation(fields: [departmentId], references: [id])
+  departmentId    Int?
+  department      Department? @relation(fields: [departmentId], references: [id])
 
-  skills      TaskSkill[]
-  assignees   TaskAssignee[]
-  comments    Comment[]
-  checklist   ChecklistItem[]
-  activities  ActivityLog[]
+  skills          TaskSkill[]
+  assignees       TaskAssignee[]
+  comments        Comment[]
+  checklist       ChecklistItem[]
+  activities      ActivityLog[]
 
   @@index([status])
   @@index([priority])
@@ -248,20 +248,20 @@ model ActivityLog {
 }
 
 model AIConversation {
-  id        Int          @id @default(autoincrement())
+  id        Int      @id @default(autoincrement())
   title     String?
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   messages  AIMessage[]
 }
 
 model AIMessage {
-  id             Int             @id @default(autoincrement())
+  id             Int            @id @default(autoincrement())
   role           String
   content        String
-  createdAt      DateTime        @default(now())
+  createdAt      DateTime       @default(now())
 
   conversationId Int
-  conversation   AIConversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation   AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 }

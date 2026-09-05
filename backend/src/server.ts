@@ -23,8 +23,12 @@ import peopleRouter from "./routes/people.routes";
 import tasksRouter from "./routes/tasks.routes";
 import assignmentRouter from "./routes/assignment.routes";
 import projectsRouter from "./routes/projects.routes";
+import dashboardRouter from "./routes/dashboard.routes";
+import searchRouter from "./routes/search.routes";
+import activityRouter from "./routes/activity.routes";
 
 import { generateAIResponse } from "./services/ai.service";
+import { classifyIntent } from "./ai/intent.service";
 
 const app = express();
 
@@ -82,6 +86,9 @@ app.use("/api/people", peopleRouter);
 app.use("/api/tasks", tasksRouter);
 app.use("/api/assignments", assignmentRouter);
 app.use("/api/projects", projectsRouter);
+app.use("/api/dashboard", dashboardRouter);
+app.use("/api/search", searchRouter);
+app.use("/api/activity", activityRouter);
 
 /* -------------------------------------------------------------------------- */
 /* GENERAL HELPERS                                                            */
@@ -447,29 +454,6 @@ function getConversationKey(req: Request): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/* CONFIRMATION KEY FALLBACK                                                   */
-/* -------------------------------------------------------------------------- */
-
-function getPendingActionKey<T>(
-  map: Map<string, T>,
-  conversationKey: string
-): string | null {
-  if (map.has(conversationKey)) {
-    return conversationKey;
-  }
-
-  // If a confirmation arrives without the same conversation key used by
-  // the preview request, safely reuse the only pending action of this type.
-  // This covers older browser sessions and requests made before the client
-  // finished initializing its conversation ID.
-  if (map.size === 1) {
-    return map.keys().next().value ?? null;
-  }
-
-  return null;
-}
-
-/* -------------------------------------------------------------------------- */
 /* PERSON CREATION HELPERS                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -613,28 +597,6 @@ async function findPersonByName(
 /* PERSON QUERY DETECTION                                                     */
 /* -------------------------------------------------------------------------- */
 
-function isAllPeopleQueryRequest(message: string): boolean {
-  const text = message
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const normalized = text
-    .replace(/^[?!.]+|[?!.]+$/g, "")
-    .trim();
-
-  const patterns = [
-    /^(?:show|list|display) (?:me |us )?(?:our |the |all )?(?:team )?(?:members|people|employees|staff)$/,
-    /^(?:show|list|display) (?:me |us )?(?:all )?(?:the )?(?:team )?(?:members|people|employees|staff)$/,
-    /^(?:who are|who is) (?:all )?(?:our |the )?(?:team )?(?:members|people|employees|staff)$/,
-    /^(?:who are|who is) (?:all )?(?:the )?(?:members|people|employees|staff) (?:on|in) (?:the )?team$/,
-    /^(?:show|list|display) (?:all )?(?:the )?(?:members|people|employees|staff) (?:present )?(?:in|on) (?:the )?team$/,
-    /^(?:show|list|display) (?:all )?(?:the )?(?:team )?(?:members|people|employees|staff) (?:present|available)$/,
-  ];
-
-  return patterns.some((pattern) => pattern.test(normalized));
-}
-
 function isPersonQueryRequest(message: string): boolean {
   const text = message
     .toLowerCase()
@@ -706,7 +668,7 @@ function extractPersonQueryName(
 ): string | null {
   const patterns = [
     /\b(?:details|detail|information|info)\s+(?:of|about|for)\s+(.+?)(?:\?|$)/i,
-    /\b(?:show|tell me about)\s+(?:(?:me|us)\s+)?(?:(?:our|the|all)\s+)?(.+?)(?:'s|\s+details|\s+information)?(?:\?|$)/i,
+    /\b(?:show|tell me about)\s+(.+?)(?:'s|\s+details|\s+information)?(?:\?|$)/i,
     /\bwhat\s+skills\s+(?:does|do)\s+(.+?)\s+have(?:\?|$)/i,
     /\bwhich\s+department\s+is\s+(.+?)\s+in(?:\?|$)/i,
     /\bwho\s+works\s+in\s+(.+?)(?:\?|$)/i,
@@ -1672,24 +1634,18 @@ function isProjectUpdateRequest(message: string): boolean {
 function isProjectMemberRequest(message: string): boolean {
   const text = message.toLowerCase().replace(/\s+/g, " ").trim();
 
-  if (
-    isProjectCreationRequest(message) ||
-    isTaskCreationRequest(message) ||
-    isTaskUpdateRequest(message) ||
-    isPersonCreationRequest(message) ||
-    /\bskills?\b/i.test(text)
-  ) {
+  if (isProjectCreationRequest(message) || isTaskCreationRequest(message) || isTaskUpdateRequest(message)) {
     return false;
   }
 
-  const patterns = [
-    /\badd\b.+\b(?:to|into)\b(?:\s+the)?\s+(?:project\s+)?[^?!.]+(?:\s+project)?[?!.]?$/i,
-    /\badd\b.+\bas\s+(?:a\s+)?member\s+of\b.+$/i,
-    /\bremove\b.+\bfrom\b(?:\s+the)?\s+(?:project\s+)?[^?!.]+(?:\s+project)?[?!.]?$/i,
-    /\bremove\b.+\bas\s+(?:a\s+)?member\s+of\b.+$/i,
-  ];
-
-  return patterns.some((pattern) => pattern.test(text));
+  return [
+    /\badd\b.+\bto\b.+\bproject\b/i,
+    /\badd\b.+\bto\b.+$/i,
+    /\bremove\b.+\bfrom\b.+\bproject\b/i,
+    /\bremove\b.+\bfrom\b.+$/i,
+  ].some((pattern) => pattern.test(text)) &&
+    !isPersonCreationRequest(message) &&
+    !/\bskills?\b/i.test(text);
 }
 
 function isProjectManagerQueryRequest(message: string): boolean {
@@ -1714,6 +1670,7 @@ function extractProjectManagementName(message: string): string | null {
     /\b(?:change|update|set)\s+(.+?)\s+due\s+date\s+to\s+/i,
     /\b(?:change|update|set)\s+(?:the\s+)?manager\s+of\s+(.+?)\s+to\s+/i,
     /\bset\s+(.+?)\s+as\s+manager\s+of\s+(.+?)(?:\?|$)/i,
+    /\b(?:add|remove)\s+.+?\s+(?:to|from)\s+(.+?)(?:\s+project)?(?:\?|$)/i,
   ];
 
   for (const pattern of patterns) {
@@ -1733,46 +1690,46 @@ function extractProjectManagementName(message: string): string | null {
   return null;
 }
 
-function cleanProjectReference(value: string): string {
-  return value
-    .trim()
-    .replace(/^the\s+/i, "")
-    .replace(/^['"]|['"]$/g, "")
-    .replace(/\s+project$/i, "")
-    .replace(/[?!.]+$/, "")
-    .trim();
-}
-
-function extractProjectMemberParts(
-  message: string
-): { personName: string; projectName: string } | null {
+function extractProjectMemberPersonName(message: string): string | null {
   const patterns = [
-    /\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:project\s+)?(.+?)(?:\s+project)?[?!.]?$/i,
-    /\bremove\s+(.+?)\s+from\s+(?:the\s+)?(?:project\s+)?(.+?)(?:\s+project)?[?!.]?$/i,
-    /\badd\s+(.+?)\s+as\s+(?:a\s+)?member\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)[?!.]?$/i,
-    /\bremove\s+(.+?)\s+as\s+(?:a\s+)?member\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)[?!.]?$/i,
+    /\badd\s+(.+?)\s+to\s+.+?(?:\s+project)?(?:\?|$)/i,
+    /\bremove\s+(.+?)\s+from\s+.+?(?:\s+project)?(?:\?|$)/i,
   ];
 
   for (const pattern of patterns) {
     const match = message.match(pattern);
-    if (match?.[1] && match?.[2]) {
-      const personName = cleanProjectReference(match[1]);
-      const projectName = cleanProjectReference(match[2]);
-      if (personName && projectName) {
-        return { personName, projectName };
-      }
+    if (match?.[1]) {
+      return match[1]
+        .trim()
+        .replace(/^['"]|['"]$/g, "")
+        .replace(/[?!.]+$/, "")
+        .trim();
     }
   }
 
   return null;
 }
 
-function extractProjectMemberPersonName(message: string): string | null {
-  return extractProjectMemberParts(message)?.personName || null;
-}
-
 function extractProjectMemberProjectName(message: string): string | null {
-  return extractProjectMemberParts(message)?.projectName || null;
+  const patterns = [
+    /\badd\s+.+?\s+to\s+(.+?)(?:\s+project)?(?:\?|$)/i,
+    /\bremove\s+.+?\s+from\s+(.+?)(?:\s+project)?(?:\?|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match?.[1]) {
+      return match[1]
+        .trim()
+        .replace(/^the\s+/i, "")
+        .replace(/\s+project$/i, "")
+        .replace(/^['"]|['"]$/g, "")
+        .replace(/[?!.]+$/, "")
+        .trim();
+    }
+  }
+
+  return null;
 }
 
 function extractProjectManagerPersonName(message: string): string | null {
@@ -2835,12 +2792,10 @@ function extractTaskStatus(
     return "IN_PROGRESS";
   }
 
-  if (
-    text.includes("blocked") ||
-    text.includes("block")
-  ) {
-    return "BLOCKED";
-  }
+  // NOTE: "blocked" is not a supported TaskStatus in the Prisma schema
+  // (BACKLOG | TODO | IN_PROGRESS | REVIEW | COMPLETED). Intentionally
+  // not mapped here — falls through so the caller can ask the user to
+  // pick one of the supported statuses instead of silently miscategorizing.
 
   if (
     text.includes("todo") ||
@@ -2991,43 +2946,49 @@ function extractTaskUpdateDepartmentName(
 function parseTaskDueDate(
   message: string
 ): Date | null {
+  const text = message
+    .replace(/\s+/g, " ")
+    .trim();
+
   const patterns = [
-    /\b(?:due date|duedate)\s+(?:to\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})/i,
-    /\bdue\s+(?:on|by)\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i,
-    /\b(?:due date|duedate)\s+(?:to\s+)?(\d{4}-\d{2}-\d{2})/i,
-    /\bdue\s+(?:on|by)\s+(\d{4}-\d{2}-\d{2})/i,
-    /\b(?:due date|duedate)\s+(?:to\s+)?(\d{1,2}\/\d{1,2}\/\d{4})/i,
-    /\bdue\s+(?:on|by)\s+(\d{1,2}\/\d{1,2}\/\d{4})/i,
-    /\b(?:due date|duedate)\s+(?:to\s+)?([A-Za-z]+\s+\d{1,2})\b/i,
-    /\bdue\s+(?:on|by)\s+([A-Za-z]+\s+\d{1,2})\b/i,
+    /\b(?:due date|duedate)\s+(?:to|as)\s+(.+?)(?:\?|$)/i,
+    /\bdue\s+(?:on|by|to)\s+(.+?)(?:\?|$)/i,
+    /\b(?:set|change|update|modify)\s+(?:the\s+)?due\s+date(?:\s+of\s+task\s+(?:with\s+)?id\s*[:#]?\s*\d+)?\s+to\s+(.+?)(?:\?|$)/i,
   ];
 
   for (const pattern of patterns) {
-    const match =
-      message.match(pattern);
+    const match = text.match(pattern);
 
-    if (match?.[1]) {
-      let dateText =
-        match[1].trim();
+    if (!match?.[1]) {
+      continue;
+    }
 
-      if (
-        /^[A-Za-z]+\s+\d{1,2}$/i.test(
-          dateText
-        )
-      ) {
-        dateText = `${dateText}, ${new Date().getFullYear()}`;
-      }
+    let dateText = match[1]
+      .trim()
+      .replace(/[?!.]+$/, "")
+      .trim();
 
-      const date =
-        new Date(dateText);
+    // Normalize common forms such as:
+    // 6 sep 2026
+    // 6 september 2026
+    // Sep 6 2026
+    // September 6, 2026
+    // 2026-09-06
+    // 09/06/2026
+    dateText = dateText.replace(
+      /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/i,
+      "$2 $1, $3"
+    );
 
-      if (
-        !Number.isNaN(
-          date.getTime()
-        )
-      ) {
-        return date;
-      }
+    dateText = dateText.replace(
+      /^([A-Za-z]+)\s+(\d{1,2})\s+(\d{4})$/i,
+      "$1 $2, $3"
+    );
+
+    const parsed = new Date(dateText);
+
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
     }
   }
 
@@ -3784,47 +3745,6 @@ app.post(
           conversationKey
         );
 
-      // Confirmation messages can arrive from a session created before the
-      // frontend started sending conversationId. Reconcile that safely by
-      // using the only pending action when the requested key has none.
-      const taskUpdateKey =
-        pendingTaskUpdate
-          ? conversationKey
-          : getPendingActionKey(
-              pendingTaskUpdateActions,
-              conversationKey
-            );
-
-      const effectivePendingTaskUpdate =
-        pendingTaskUpdate ||
-        (taskUpdateKey
-          ? pendingTaskUpdateActions.get(taskUpdateKey)
-          : undefined);
-
-      const personUpdateKey =
-        pendingPersonUpdate
-          ? conversationKey
-          : getPendingActionKey(
-              pendingPersonUpdateActions,
-              conversationKey
-            );
-
-      const effectivePendingPersonUpdate =
-        pendingPersonUpdate ||
-        (personUpdateKey
-          ? pendingPersonUpdateActions.get(personUpdateKey)
-          : undefined);
-
-      console.log(
-        "AI CONFIRMATION STATE:",
-        JSON.stringify({
-          message,
-          conversationKey,
-          hasPendingTaskUpdate: Boolean(effectivePendingTaskUpdate),
-          hasPendingPersonUpdate: Boolean(effectivePendingPersonUpdate),
-        })
-      );
-
       /* ------------------------------------------------------------------ */
       /* CANCELLATION                                                       */
       /* ------------------------------------------------------------------ */
@@ -3874,28 +3794,25 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        effectivePendingPersonUpdate &&
-        effectivePendingPersonUpdate.intent ===
+        pendingPersonUpdate &&
+        pendingPersonUpdate.intent ===
           "UPDATE_PERSON" &&
         isConfirmation(message)
       ) {
-        const confirmedPersonUpdate =
-          effectivePendingPersonUpdate;
-
         const updatedPerson =
           await applyPersonUpdate(
-            confirmedPersonUpdate
+            pendingPersonUpdate
           );
 
         pendingPersonUpdateActions.delete(
-          personUpdateKey || conversationKey
+          conversationKey
         );
 
         let successMessage =
           `✅ **${updatedPerson?.fullName || pendingPersonUpdate.personName}** has been updated successfully.`;
 
         if (
-          confirmedPersonUpdate.field ===
+          pendingPersonUpdate.field ===
           "skills_add"
         ) {
           successMessage +=
@@ -3903,7 +3820,7 @@ app.post(
         }
 
         else if (
-          confirmedPersonUpdate.field ===
+          pendingPersonUpdate.field ===
           "skills_remove"
         ) {
           successMessage +=
@@ -3911,27 +3828,27 @@ app.post(
         }
 
         else if (
-          confirmedPersonUpdate.field ===
+          pendingPersonUpdate.field ===
           "department"
         ) {
           successMessage +=
-            `\n\n**New department:** ${confirmedPersonUpdate.displayValue}`;
+            `\n\n**New department:** ${pendingPersonUpdate.displayValue}`;
         }
 
         else if (
-          confirmedPersonUpdate.field ===
+          pendingPersonUpdate.field ===
           "availability"
         ) {
           successMessage +=
-            `\n\n**New availability:** ${confirmedPersonUpdate.displayValue}`;
+            `\n\n**New availability:** ${pendingPersonUpdate.displayValue}`;
         }
 
         else if (
-          confirmedPersonUpdate.field ===
+          pendingPersonUpdate.field ===
           "active"
         ) {
           successMessage +=
-            `\n\n**New account status:** ${confirmedPersonUpdate.displayValue}`;
+            `\n\n**New account status:** ${pendingPersonUpdate.displayValue}`;
         }
 
         return res.json({
@@ -3954,28 +3871,25 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        effectivePendingTaskUpdate &&
-        effectivePendingTaskUpdate.intent ===
+        pendingTaskUpdate &&
+        pendingTaskUpdate.intent ===
           "UPDATE_TASK" &&
         isConfirmation(message)
       ) {
-        const confirmedTaskUpdate =
-          effectivePendingTaskUpdate;
-
         const updatedTask =
           await applyTaskUpdate(
-            confirmedTaskUpdate
+            pendingTaskUpdate
           );
 
         pendingTaskUpdateActions.delete(
-          taskUpdateKey || conversationKey
+          conversationKey
         );
 
         let successMessage =
           `✅ Task **#${updatedTask.id} — ${updatedTask.title}** has been updated successfully.`;
 
         if (
-          confirmedTaskUpdate.field ===
+          pendingTaskUpdate.field ===
           "status"
         ) {
           successMessage +=
@@ -3983,7 +3897,7 @@ app.post(
         }
 
         else if (
-          confirmedTaskUpdate.field ===
+          pendingTaskUpdate.field ===
           "priority"
         ) {
           successMessage +=
@@ -3991,35 +3905,35 @@ app.post(
         }
 
         else if (
-          confirmedTaskUpdate.field ===
+          pendingTaskUpdate.field ===
           "assignee"
         ) {
           successMessage +=
-            `\n\n**New assignee:** ${confirmedTaskUpdate.displayValue}`;
+            `\n\n**New assignee:** ${pendingTaskUpdate.displayValue}`;
         }
 
         else if (
-          confirmedTaskUpdate.field ===
+          pendingTaskUpdate.field ===
           "project"
         ) {
           successMessage +=
-            `\n\n**New project:** ${confirmedTaskUpdate.displayValue}`;
+            `\n\n**New project:** ${pendingTaskUpdate.displayValue}`;
         }
 
         else if (
-          confirmedTaskUpdate.field ===
+          pendingTaskUpdate.field ===
           "department"
         ) {
           successMessage +=
-            `\n\n**New department:** ${confirmedTaskUpdate.displayValue}`;
+            `\n\n**New department:** ${pendingTaskUpdate.displayValue}`;
         }
 
         else if (
-          confirmedTaskUpdate.field ===
+          pendingTaskUpdate.field ===
           "dueDate"
         ) {
           successMessage +=
-            `\n\n**New due date:** ${confirmedTaskUpdate.displayValue}`;
+            `\n\n**New due date:** ${pendingTaskUpdate.displayValue}`;
         }
 
         return res.json({
@@ -4280,10 +4194,28 @@ app.post(
       }
 
       /* ------------------------------------------------------------------ */
+      /* LLM INTENT CLASSIFICATION                                          */
+      /*                                                                    */
+      /* Ollama classifies the message into one of the application's known */
+      /* intents. This runs ONLY once we've established there is no        */
+      /* pending confirmation/cancellation to handle above. The result is  */
+      /* OR'd into each existing regex gate below — if classification      */
+      /* fails or returns something unexpected, llmIntent is "UNKNOWN" and */
+      /* every gate falls back to its original regex-only behavior.        */
+      /* ------------------------------------------------------------------ */
+
+      const llmIntent = await classifyIntent(message, {
+        hasPendingPerson: Boolean(pendingPerson),
+        hasPendingTask: Boolean(pendingTask),
+        hasPendingProject: Boolean(pendingProject),
+      });
+
+      /* ------------------------------------------------------------------ */
       /* START PERSON CREATION                                              */
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "PERSON_CREATE" ||
         isPersonCreationRequest(
           message
         )
@@ -4332,6 +4264,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "PERSON_UPDATE" ||
         isPersonUpdateRequest(
           message
         )
@@ -4368,6 +4301,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "PERSON_QUERY" ||
         isPersonQueryRequest(
           message
         )
@@ -4375,11 +4309,10 @@ app.post(
         const text =
           message.toLowerCase();
 
-        const allPeopleQuery = isAllPeopleQueryRequest(message);
-
-        const personName = allPeopleQuery
-          ? null
-          : extractPersonQueryName(message);
+        const personName =
+          extractPersonQueryName(
+            message
+          );
 
         /* -------------------------------------------------------------- */
         /* ALL PEOPLE                                                       */
@@ -4388,7 +4321,6 @@ app.post(
         if (
           !personName &&
           (
-            allPeopleQuery ||
             text.includes("all team") ||
             text.includes("all people") ||
             text.includes("all members") ||
@@ -4984,9 +4916,10 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        isAvailabilityRequest(
-          message
-        ) &&
+        (llmIntent === "AVAILABILITY_QUERY" ||
+          isAvailabilityRequest(
+            message
+          )) &&
         !extractTaskId(message)
       ) {
         const members =
@@ -5081,7 +5014,10 @@ app.post(
       /* PROJECT MANAGER / MEMBER UPDATES                                   */
       /* ------------------------------------------------------------------ */
 
-      if (isProjectMemberRequest(message)) {
+      if (
+        llmIntent === "PROJECT_MEMBER_UPDATE" ||
+        isProjectMemberRequest(message)
+      ) {
         const action = await prepareProjectMemberAction(message);
 
         pendingProjectMemberActions.set(
@@ -5114,7 +5050,10 @@ app.post(
         });
       }
 
-      if (isProjectUpdateRequest(message)) {
+      if (
+        llmIntent === "PROJECT_UPDATE" ||
+        isProjectUpdateRequest(message)
+      ) {
         const action = await prepareProjectUpdate(message);
 
         const project = await getProjectForManagement(
@@ -5161,6 +5100,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "PROJECT_CREATE" ||
         isProjectCreationRequest(
           message
         )
@@ -5254,6 +5194,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "PROJECT_MEMBER_QUERY" ||
         isProjectMemberQueryRequest(message) ||
         isProjectManagerQueryRequest(message)
       ) {
@@ -5273,21 +5214,25 @@ app.post(
           });
         }
 
-        const projectBase = await findProjectByName(projectName);
-
-        const project = projectBase
-          ? await prisma.project.findUnique({
-              where: { id: projectBase.id },
+        const project = await prisma.project.findFirst({
+          where: {
+            name: {
+              contains: projectName,
+              // NOTE: `mode: "insensitive"` is not supported by SQLite in
+              // Prisma and throws at runtime. SQLite's default `contains`
+              // is already case-insensitive for ASCII text, so it's safe
+              // to omit here.
+            },
+          },
+          include: {
+            manager: true,
+            members: {
               include: {
-                manager: true,
-                members: {
-                  include: {
-                    person: true,
-                  },
-                },
+                person: true,
               },
-            })
-          : null;
+            },
+          },
+        });
 
         if (!project) {
           return res.json({
@@ -5343,6 +5288,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "PROJECT_QUERY" ||
         isProjectQueryRequest(
           message
         )
@@ -5357,6 +5303,9 @@ app.post(
             await prisma.project.findMany({
               orderBy: {
                 name: "asc",
+              },
+              include: {
+                manager: true,
               },
             });
 
@@ -5443,23 +5392,25 @@ app.post(
           });
         }
 
-        const projectBase = projectName
-          ? await findProjectByName(projectName)
-          : null;
-
-        const project = projectBase
-          ? await prisma.project.findUnique({
-              where: { id: projectBase.id },
-              include: {
-                manager: true,
-                members: {
-                  include: {
-                    person: true,
+        const project =
+          projectName
+            ? await prisma.project.findFirst({
+                where: {
+                  name: {
+                    contains: projectName,
+                    // See note above: SQLite doesn't support mode: "insensitive".
                   },
                 },
-              },
-            })
-          : null;
+                include: {
+                  manager: true,
+                  members: {
+                    include: {
+                      person: true,
+                    },
+                  },
+                },
+              })
+            : null;
 
         if (!project) {
           return res.json({
@@ -5616,6 +5567,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "TASK_UPDATE" ||
         isTaskUpdateRequest(
           message
         )
@@ -5652,6 +5604,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "TASK_QUERY" ||
         isTaskQueryRequest(
           message
         )
@@ -5942,6 +5895,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "TASK_CREATE" ||
         isTaskCreationRequest(
           message
         )
@@ -6024,6 +5978,7 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
+        llmIntent === "ASSIGNMENT_RECOMMEND" ||
         isAssignmentRequest(
           message
         )

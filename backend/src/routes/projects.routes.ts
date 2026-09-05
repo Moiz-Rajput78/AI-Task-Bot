@@ -14,6 +14,116 @@ const VALID_STATUSES = [
 type ProjectStatus = (typeof VALID_STATUSES)[number];
 
 /* -------------------------------------------------------------------------- */
+/* HELPERS                                                                    */
+/* -------------------------------------------------------------------------- */
+
+function parsePositiveId(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const id = Number(value);
+
+  if (!Number.isInteger(id) || id <= 0) {
+    return null;
+  }
+
+  return id;
+}
+
+function parseOptionalDate(value: unknown): Date | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string" && !(value instanceof Date)) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
+}
+
+function parseMemberIds(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      value
+        .map((id) => Number(id))
+        .filter(
+          (id) => Number.isInteger(id) && id > 0
+        )
+    ),
+  ];
+}
+
+async function getProjectWithDetails(id: number) {
+  return prisma.project.findUnique({
+    where: {
+      id,
+    },
+    include: {
+      manager: {
+        include: {
+          department: true,
+          skills: {
+            include: {
+              skill: true,
+            },
+          },
+        },
+      },
+      members: {
+        include: {
+          person: {
+            include: {
+              department: true,
+              skills: {
+                include: {
+                  skill: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      tasks: {
+        orderBy: {
+          createdAt: "desc",
+        },
+        include: {
+          department: true,
+          skills: {
+            include: {
+              skill: true,
+            },
+          },
+          assignees: {
+            include: {
+              person: true,
+            },
+          },
+        },
+      },
+      _count: {
+        select: {
+          members: true,
+          tasks: true,
+        },
+      },
+    },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
 /* GET ALL PROJECTS                                                           */
 /* -------------------------------------------------------------------------- */
 
@@ -77,61 +187,7 @@ router.get("/:id", async (req, res) => {
       });
     }
 
-    const project = await prisma.project.findUnique({
-      where: {
-        id,
-      },
-      include: {
-        manager: {
-          include: {
-            department: true,
-            skills: {
-              include: {
-                skill: true,
-              },
-            },
-          },
-        },
-        members: {
-          include: {
-            person: {
-              include: {
-                department: true,
-                skills: {
-                  include: {
-                    skill: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        tasks: {
-          orderBy: {
-            createdAt: "desc",
-          },
-          include: {
-            department: true,
-            skills: {
-              include: {
-                skill: true,
-              },
-            },
-            assignees: {
-              include: {
-                person: true,
-              },
-            },
-          },
-        },
-        _count: {
-          select: {
-            members: true,
-            tasks: true,
-          },
-        },
-      },
-    });
+    const project = await getProjectWithDetails(id);
 
     if (!project) {
       return res.status(404).json({
@@ -169,10 +225,12 @@ router.post("/", async (req, res) => {
       status,
       managerId,
       memberIds,
-    } = req.body;
+    } = req.body ?? {};
 
     const projectName =
-      typeof name === "string" ? name.trim() : "";
+      typeof name === "string"
+        ? name.trim()
+        : "";
 
     if (!projectName) {
       return res.status(400).json({
@@ -193,12 +251,18 @@ router.post("/", async (req, res) => {
       });
     }
 
+    /* ------------------------------ MANAGER ------------------------------ */
+
     let parsedManagerId: number | null = null;
 
-    if (managerId !== undefined && managerId !== null && managerId !== "") {
-      parsedManagerId = Number(managerId);
+    if (
+      managerId !== undefined &&
+      managerId !== null &&
+      managerId !== ""
+    ) {
+      parsedManagerId = parsePositiveId(managerId);
 
-      if (!Number.isInteger(parsedManagerId) || parsedManagerId <= 0) {
+      if (parsedManagerId === null) {
         return res.status(400).json({
           success: false,
           message: "Invalid manager ID.",
@@ -214,38 +278,34 @@ router.post("/", async (req, res) => {
       if (!manager || !manager.isActive) {
         return res.status(400).json({
           success: false,
-          message: "Selected project manager does not exist or is inactive.",
+          message:
+            "Selected project manager does not exist or is inactive.",
         });
       }
     }
 
-    const parsedMemberIds = Array.isArray(memberIds)
-      ? [
-          ...new Set(
-            memberIds
-              .map((id: unknown) => Number(id))
-              .filter(
-                (id: number) =>
-                  Number.isInteger(id) && id > 0
-              )
-          ),
-        ]
-      : [];
+    /* ------------------------------ MEMBERS ------------------------------ */
+
+    const parsedMemberIds = parseMemberIds(memberIds);
 
     if (parsedMemberIds.length > 0) {
-      const activePeople = await prisma.person.findMany({
-        where: {
-          id: {
-            in: parsedMemberIds,
+      const activePeople =
+        await prisma.person.findMany({
+          where: {
+            id: {
+              in: parsedMemberIds,
+            },
+            isActive: true,
           },
-          isActive: true,
-        },
-        select: {
-          id: true,
-        },
-      });
+          select: {
+            id: true,
+          },
+        });
 
-      if (activePeople.length !== parsedMemberIds.length) {
+      if (
+        activePeople.length !==
+        parsedMemberIds.length
+      ) {
         return res.status(400).json({
           success: false,
           message:
@@ -254,13 +314,15 @@ router.post("/", async (req, res) => {
       }
     }
 
+    /* ------------------------------- DATES -------------------------------- */
+
     let parsedStartDate: Date | null = null;
     let parsedDueDate: Date | null = null;
 
-    if (startDate) {
-      parsedStartDate = new Date(startDate);
+    if (startDate !== undefined && startDate !== null && startDate !== "") {
+      parsedStartDate = parseOptionalDate(startDate);
 
-      if (Number.isNaN(parsedStartDate.getTime())) {
+      if (!parsedStartDate) {
         return res.status(400).json({
           success: false,
           message: "Invalid start date.",
@@ -268,10 +330,10 @@ router.post("/", async (req, res) => {
       }
     }
 
-    if (dueDate) {
-      parsedDueDate = new Date(dueDate);
+    if (dueDate !== undefined && dueDate !== null && dueDate !== "") {
+      parsedDueDate = parseOptionalDate(dueDate);
 
-      if (Number.isNaN(parsedDueDate.getTime())) {
+      if (!parsedDueDate) {
         return res.status(400).json({
           success: false,
           message: "Invalid due date.",
@@ -286,63 +348,66 @@ router.post("/", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Due date cannot be before the start date.",
+        message:
+          "Due date cannot be before the start date.",
       });
     }
 
-    const project = await prisma.project.create({
-      data: {
-        name: projectName,
-        description:
-          typeof description === "string"
-            ? description.trim() || null
-            : null,
-        client:
-          typeof client === "string"
-            ? client.trim() || null
-            : null,
-        startDate: parsedStartDate,
-        dueDate: parsedDueDate,
-        status: projectStatus,
-        managerId: parsedManagerId,
-        members:
-          parsedMemberIds.length > 0
-            ? {
-                create: parsedMemberIds.map(
-                  (personId) => ({
-                    personId,
-                  })
-                ),
-              }
-            : undefined,
-      },
-      include: {
-        manager: true,
-        members: {
-          include: {
-            person: true,
-          },
-        },
-        _count: {
-          select: {
-            members: true,
-            tasks: true,
-          },
-        },
-      },
-    });
+    /* ------------------------------ CREATE -------------------------------- */
 
-    await prisma.activityLog.create({
-      data: {
-        action: "PROJECT_CREATED",
-        entity: "Project",
-        details: `Project "${project.name}" was created.`,
-      },
-    });
+    const project = await prisma.$transaction(
+      async (tx) => {
+        const createdProject =
+          await tx.project.create({
+            data: {
+              name: projectName,
+
+              description:
+                typeof description === "string"
+                  ? description.trim() || null
+                  : null,
+
+              client:
+                typeof client === "string"
+                  ? client.trim() || null
+                  : null,
+
+              startDate: parsedStartDate,
+              dueDate: parsedDueDate,
+              status: projectStatus,
+              managerId: parsedManagerId,
+
+              members:
+                parsedMemberIds.length > 0
+                  ? {
+                      create: parsedMemberIds.map(
+                        (personId) => ({
+                          personId,
+                        })
+                      ),
+                    }
+                  : undefined,
+            },
+          });
+
+        await tx.activityLog.create({
+          data: {
+            action: "PROJECT_CREATED",
+            entity: "Project",
+            details: `Project "${createdProject.name}" was created.`,
+          },
+        });
+
+        return createdProject;
+      }
+    );
+
+    const completeProject =
+      await getProjectWithDetails(project.id);
 
     return res.status(201).json({
       success: true,
-      data: project,
+      data: completeProject,
     });
   } catch (error) {
     console.error("Failed to create project:", error);
@@ -369,11 +434,12 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const existingProject = await prisma.project.findUnique({
-      where: {
-        id,
-      },
-    });
+    const existingProject =
+      await prisma.project.findUnique({
+        where: {
+          id,
+        },
+      });
 
     if (!existingProject) {
       return res.status(404).json({
@@ -391,7 +457,9 @@ router.put("/:id", async (req, res) => {
       status,
       managerId,
       memberIds,
-    } = req.body;
+    } = req.body ?? {};
+
+    /* ------------------------------- NAME --------------------------------- */
 
     const projectName =
       typeof name === "string"
@@ -405,6 +473,8 @@ router.put("/:id", async (req, res) => {
       });
     }
 
+    /* ------------------------------ STATUS -------------------------------- */
+
     const projectStatus: ProjectStatus =
       status || existingProject.status;
 
@@ -417,7 +487,9 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    let parsedManagerId: number | null =
+    /* ------------------------------ MANAGER ------------------------------ */
+
+    let parsedManagerId =
       existingProject.managerId;
 
     if (managerId !== undefined) {
@@ -427,23 +499,22 @@ router.put("/:id", async (req, res) => {
       ) {
         parsedManagerId = null;
       } else {
-        parsedManagerId = Number(managerId);
+        parsedManagerId =
+          parsePositiveId(managerId);
 
-        if (
-          !Number.isInteger(parsedManagerId) ||
-          parsedManagerId <= 0
-        ) {
+        if (parsedManagerId === null) {
           return res.status(400).json({
             success: false,
             message: "Invalid manager ID.",
           });
         }
 
-        const manager = await prisma.person.findUnique({
-          where: {
-            id: parsedManagerId,
-          },
-        });
+        const manager =
+          await prisma.person.findUnique({
+            where: {
+              id: parsedManagerId,
+            },
+          });
 
         if (!manager || !manager.isActive) {
           return res.status(400).json({
@@ -455,19 +526,25 @@ router.put("/:id", async (req, res) => {
       }
     }
 
-    let parsedStartDate: Date | null =
+    /* ------------------------------- DATES -------------------------------- */
+
+    let parsedStartDate =
       existingProject.startDate;
 
-    let parsedDueDate: Date | null =
+    let parsedDueDate =
       existingProject.dueDate;
 
     if (startDate !== undefined) {
-      if (!startDate) {
+      if (
+        startDate === null ||
+        startDate === ""
+      ) {
         parsedStartDate = null;
       } else {
-        parsedStartDate = new Date(startDate);
+        parsedStartDate =
+          parseOptionalDate(startDate);
 
-        if (Number.isNaN(parsedStartDate.getTime())) {
+        if (!parsedStartDate) {
           return res.status(400).json({
             success: false,
             message: "Invalid start date.",
@@ -477,12 +554,16 @@ router.put("/:id", async (req, res) => {
     }
 
     if (dueDate !== undefined) {
-      if (!dueDate) {
+      if (
+        dueDate === null ||
+        dueDate === ""
+      ) {
         parsedDueDate = null;
       } else {
-        parsedDueDate = new Date(dueDate);
+        parsedDueDate =
+          parseOptionalDate(dueDate);
 
-        if (Number.isNaN(parsedDueDate.getTime())) {
+        if (!parsedDueDate) {
           return res.status(400).json({
             success: false,
             message: "Invalid due date.",
@@ -503,54 +584,22 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const updateData: {
-      name: string;
-      description?: string | null;
-      client?: string | null;
-      startDate: Date | null;
-      dueDate: Date | null;
-      status: ProjectStatus;
-      managerId: number | null;
-    } = {
-      name: projectName,
-      startDate: parsedStartDate,
-      dueDate: parsedDueDate,
-      status: projectStatus,
-      managerId: parsedManagerId,
-    };
+    /* ------------------------------ MEMBERS ------------------------------ */
 
-    if (description !== undefined) {
-      updateData.description =
-        typeof description === "string"
-          ? description.trim() || null
-          : null;
-    }
+    let parsedMemberIds: number[] | null = null;
 
-    if (client !== undefined) {
-      updateData.client =
-        typeof client === "string"
-          ? client.trim() || null
-          : null;
-    }
+    if (memberIds !== undefined) {
+      if (!Array.isArray(memberIds)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "memberIds must be an array.",
+        });
+      }
 
-    const parsedMemberIds =
-      memberIds !== undefined && Array.isArray(memberIds)
-        ? [
-            ...new Set(
-              memberIds
-                .map((memberId: unknown) =>
-                  Number(memberId)
-                )
-                .filter(
-                  (memberId: number) =>
-                    Number.isInteger(memberId) &&
-                    memberId > 0
-                )
-            ),
-          ]
-        : null;
+      parsedMemberIds =
+        parseMemberIds(memberIds);
 
-    if (parsedMemberIds) {
       if (parsedMemberIds.length > 0) {
         const activePeople =
           await prisma.person.findMany({
@@ -576,66 +625,109 @@ router.put("/:id", async (req, res) => {
           });
         }
       }
-
-      await prisma.projectMember.deleteMany({
-        where: {
-          projectId: id,
-        },
-      });
-
-      if (parsedMemberIds.length > 0) {
-        await prisma.projectMember.createMany({
-          data: parsedMemberIds.map(
-            (personId) => ({
-              projectId: id,
-              personId,
-            })
-          ),
-          skipDuplicates: true,
-        });
-      }
     }
 
-    const project = await prisma.project.update({
-      where: {
-        id,
-      },
-      data: updateData,
-      include: {
-        manager: true,
-        members: {
-          include: {
-            person: true,
-          },
-        },
-        tasks: {
-          orderBy: {
-            createdAt: "desc",
-          },
-        },
-        _count: {
-          select: {
-            members: true,
-            tasks: true,
-          },
-        },
-      },
-    });
+    /* ------------------------------ UPDATE -------------------------------- */
 
-    await prisma.activityLog.create({
-      data: {
-        action: "PROJECT_UPDATED",
-        entity: "Project",
-        details: `Project "${project.name}" was updated.`,
-      },
-    });
+    const updatedProjectId =
+      await prisma.$transaction(async (tx) => {
+        const updateData: {
+          name: string;
+          description: string | null;
+          client: string | null;
+          startDate: Date | null;
+          dueDate: Date | null;
+          status: ProjectStatus;
+          managerId: number | null;
+        } = {
+          name: projectName,
+
+          description:
+            description !== undefined
+              ? typeof description === "string"
+                ? description.trim() || null
+                : null
+              : existingProject.description,
+
+          client:
+            client !== undefined
+              ? typeof client === "string"
+                ? client.trim() || null
+                : null
+              : existingProject.client,
+
+          startDate: parsedStartDate,
+          dueDate: parsedDueDate,
+          status: projectStatus,
+          managerId: parsedManagerId,
+        };
+
+        const updated =
+          await tx.project.update({
+            where: {
+              id,
+            },
+            data: updateData,
+          });
+
+        /* ------------------------ UPDATE MEMBERS ------------------------- */
+
+        if (parsedMemberIds !== null) {
+          await tx.projectMember.deleteMany({
+            where: {
+              projectId: id,
+            },
+          });
+
+          if (parsedMemberIds.length > 0) {
+            await tx.projectMember.createMany({
+              data: parsedMemberIds.map(
+                (personId) => ({
+                  projectId: id,
+                  personId,
+                })
+              ),
+            });
+          }
+        }
+
+        /* -------------------------- ACTIVITY LOG -------------------------- */
+
+        await tx.activityLog.create({
+          data: {
+            action: "PROJECT_UPDATED",
+            entity: "Project",
+            details: `Project "${updated.name}" was updated.`,
+          },
+        });
+
+        return updated.id;
+      });
+
+    /* ------------------------- LOAD SAVED DATA --------------------------- */
+
+    const savedProject =
+      await getProjectWithDetails(
+        updatedProjectId
+      );
+
+    if (!savedProject) {
+      return res.status(500).json({
+        success: false,
+        message:
+          "Project was updated but could not be loaded afterward.",
+      });
+    }
 
     return res.json({
       success: true,
-      data: project,
+      data: savedProject,
     });
   } catch (error) {
-    console.error("Failed to update project:", error);
+    console.error(
+      "Failed to update project:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -659,19 +751,20 @@ router.delete("/:id", async (req, res) => {
       });
     }
 
-    const project = await prisma.project.findUnique({
-      where: {
-        id,
-      },
-      include: {
-        _count: {
-          select: {
-            tasks: true,
-            members: true,
+    const project =
+      await prisma.project.findUnique({
+        where: {
+          id,
+        },
+        include: {
+          _count: {
+            select: {
+              tasks: true,
+              members: true,
+            },
           },
         },
-      },
-    });
+      });
 
     if (!project) {
       return res.status(404).json({
@@ -688,29 +781,37 @@ router.delete("/:id", async (req, res) => {
       });
     }
 
-    await prisma.project.delete({
-      where: {
-        id,
-      },
-    });
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.project.delete({
+          where: {
+            id,
+          },
+        });
 
-    await prisma.activityLog.create({
-      data: {
-        action: "PROJECT_DELETED",
-        entity: "Project",
-        details: `Project "${project.name}" was deleted.`,
-      },
-    });
+        await tx.activityLog.create({
+          data: {
+            action: "PROJECT_DELETED",
+            entity: "Project",
+            details: `Project "${project.name}" was deleted.`,
+          },
+        });
+      }
+    );
 
     return res.json({
       success: true,
       data: {
         id,
-        message: "Project deleted successfully.",
+        message:
+          "Project deleted successfully.",
       },
     });
   } catch (error) {
-    console.error("Failed to delete project:", error);
+    console.error(
+      "Failed to delete project:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -726,7 +827,9 @@ router.delete("/:id", async (req, res) => {
 router.post("/:id/members", async (req, res) => {
   try {
     const projectId = Number(req.params.id);
-    const personId = Number(req.body?.personId);
+    const personId = Number(
+      req.body?.personId
+    );
 
     if (
       !Number.isInteger(projectId) ||
@@ -744,15 +847,17 @@ router.post("/:id/members", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Valid personId is required.",
+        message:
+          "Valid personId is required.",
       });
     }
 
-    const project = await prisma.project.findUnique({
-      where: {
-        id: projectId,
-      },
-    });
+    const project =
+      await prisma.project.findUnique({
+        where: {
+          id: projectId,
+        },
+      });
 
     if (!project) {
       return res.status(404).json({
@@ -761,11 +866,12 @@ router.post("/:id/members", async (req, res) => {
       });
     }
 
-    const person = await prisma.person.findUnique({
-      where: {
-        id: personId,
-      },
-    });
+    const person =
+      await prisma.person.findUnique({
+        where: {
+          id: personId,
+        },
+      });
 
     if (!person || !person.isActive) {
       return res.status(400).json({
@@ -817,7 +923,8 @@ router.post("/:id/members", async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to add project member.",
+      message:
+        "Failed to add project member.",
     });
   }
 });
@@ -830,7 +937,10 @@ router.delete(
   "/:id/members/:personId",
   async (req, res) => {
     try {
-      const projectId = Number(req.params.id);
+      const projectId = Number(
+        req.params.id
+      );
+
       const personId = Number(
         req.params.personId
       );
@@ -843,7 +953,8 @@ router.delete(
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid project or person ID.",
+          message:
+            "Invalid project or person ID.",
         });
       }
 
