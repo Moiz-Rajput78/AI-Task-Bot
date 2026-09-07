@@ -5505,6 +5505,9 @@ app.post(
               orderBy: {
                 name: "asc",
               },
+              include: {
+                manager: true,
+              },
             });
 
           if (

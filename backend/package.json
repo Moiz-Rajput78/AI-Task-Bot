@@ -1,16 +1,22 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "AI Task Bot backend",
+  "main": "dist/server.js",
   "scripts": {
-  "dev": "tsx watch src/server.ts",
-  "build": "prisma generate && tsc",
-  "start": "node dist/server.js",
-  "postinstall": "prisma skills sync || exit 0"
+    "dev": "tsx watch src/server.ts",
+    "build": "prisma generate && tsc",
+    "start": "node dist/server.js",
+    "postinstall": "prisma generate"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "ai",
+    "task-management",
+    "express",
+    "prisma",
+    "ollama"
+  ],
+  "author": "Abdul Moiz",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
