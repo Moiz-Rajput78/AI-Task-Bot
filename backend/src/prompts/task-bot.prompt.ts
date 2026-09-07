@@ -462,16 +462,18 @@ Map them to the application's supported priority values when appropriate.
 STATUS
 ==================================================
 
-Recognize common task status expressions such as:
+Recognize the application's supported task statuses:
 
-- todo
-- pending
+- backlog
+- todo / to do
 - in progress
-- completed
-- done
-- cancelled
+- review
+- completed / done
 
-Use the application's actual supported status values.
+Natural commands such as "move task 17 to backlog", "set task 17 to review",
+or "id 17 to backlog" must be interpreted as a STATUS update.
+Never invent unsupported statuses such as BLOCKED or CANCELLED.
+Always use one of: BACKLOG, TODO, IN_PROGRESS, REVIEW, COMPLETED.
 
 ==================================================
 DATABASE CONTEXT
