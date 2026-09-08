@@ -7737,10 +7737,18 @@ app.use(
 /* START SERVER                                                               */
 /* -------------------------------------------------------------------------- */
 
-app.listen(PORT, () => {
-  console.log(
-    `Backend server running on http://localhost:${PORT}`
-  );
+/* -------------------------------------------------------------------------- */
+/* START SERVER / VERCEL EXPORT                                               */
+/* -------------------------------------------------------------------------- */
 
-  startTaskProcessor();
-});
+export default app;
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(
+      `Backend server running on http://localhost:${PORT}`
+    );
+
+    startTaskProcessor();
+  });
+}
