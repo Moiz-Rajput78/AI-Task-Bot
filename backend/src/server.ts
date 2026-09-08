@@ -581,6 +581,9 @@ function setPendingTaskUpdate(
   lastPendingTaskUpdate = { conversationKey, action };
 }
 
+
+
+
 function deletePendingTaskUpdate(
   conversationKey: string
 ): void {
@@ -4595,6 +4598,14 @@ const effectivePendingBulkTaskUpdate =
           conversationKey
         );
 
+        deletePendingBulkTaskUpdate(
+  conversationKey
+);
+
+lastPendingBulkTaskUpdate =
+  null;
+
+
         return res.json({
           success: true,
           data: {
@@ -4688,8 +4699,8 @@ const effectivePendingBulkTaskUpdate =
 
 
 
-      /* ------------------------------------------------------------------ */
-/* CONFIRM BULK TASK UPDATE                                          */
+/* ------------------------------------------------------------------ */
+/* CONFIRM BULK TASK STATUS UPDATE                                    */
 /* ------------------------------------------------------------------ */
 
 if (
@@ -4706,28 +4717,31 @@ if (
       confirmedBulkUpdate
     );
 
-  pendingBulkTaskUpdateActions.delete(
-  conversationKey
-);
+  deletePendingBulkTaskUpdate(
+    bulkTaskUpdateKey ||
+      lastPendingBulkTaskUpdate?.conversationKey ||
+      conversationKey
+  );
 
-if (
-  lastPendingBulkTaskUpdate?.conversationKey ===
-  conversationKey
-) {
-  lastPendingBulkTaskUpdate = null;
-}
-
-  lastPendingBulkTaskUpdate = null;
+  lastPendingBulkTaskUpdate =
+    null;
 
   return res.json({
     success: true,
     data: {
-      reply:
-        `✅ **${result.count} task(s)** have been updated successfully.\n\n**New status:** ${confirmedBulkUpdate.displayValue}`,
-      intent: "UPDATE_ALL_TASKS",
-      requiresConfirmation: false,
-      updatedCount: result.count,
-      status: confirmedBulkUpdate.value,
+      reply: [
+        `✅ **${result.count} task(s)** have been updated successfully.`,
+        "",
+        `**New status:** ${confirmedBulkUpdate.displayValue}`,
+      ].join("\n"),
+      intent:
+        "UPDATE_ALL_TASKS",
+      requiresConfirmation:
+        false,
+      updatedCount:
+        result.count,
+      status:
+        confirmedBulkUpdate.value,
     },
   });
 }
@@ -6762,48 +6776,106 @@ if (isTeamSkillsQueryRequest(message)) {
       /* TASK UPDATES                                                       */
       /* ------------------------------------------------------------------ */
 
-      if (
-        isTaskUpdateRequest(
-          message
-        )
-      ) {
-        const taskUpdate =
-          await prepareTaskUpdate(
-            message
-          );
+      /* ------------------------------------------------------------------ */
+/* TASK UPDATES                                                       */
+/* ------------------------------------------------------------------ */
 
-        setPendingTaskUpdate(
-          conversationKey,
+/*
+ * IMPORTANT:
+ * Bulk task status updates MUST be checked before normal task updates.
+ * Otherwise requests such as:
+ *
+ *   "change the status of all tasks to backlog"
+ *
+ * can fall through to the single-task update handler.
+ */
+
+if (isBulkTaskStatusUpdateRequest(message)) {
+  const bulkTaskUpdate =
+    await prepareBulkTaskStatusUpdate(message);
+
+  setPendingBulkTaskUpdate(
+    conversationKey,
+    bulkTaskUpdate
+  );
+
+  console.log(
+    "BULK TASK UPDATE PENDING:",
+    JSON.stringify({
+      conversationKey,
+      intent: bulkTaskUpdate.intent,
+      field: bulkTaskUpdate.field,
+      value: bulkTaskUpdate.value,
+      displayValue: bulkTaskUpdate.displayValue,
+      taskCount: bulkTaskUpdate.taskCount,
+      mapSize:
+        pendingBulkTaskUpdateActions.size,
+    })
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      reply:
+        formatBulkTaskStatusPreview(
+          bulkTaskUpdate
+        ),
+      intent:
+        "UPDATE_ALL_TASKS",
+      requiresConfirmation:
+        true,
+      preview:
+        bulkTaskUpdate,
+    },
+  });
+}
+
+if (
+  isTaskUpdateRequest(
+    message
+  )
+) {
+  const taskUpdate =
+    await prepareTaskUpdate(
+      message
+    );
+
+  setPendingTaskUpdate(
+    conversationKey,
+    taskUpdate
+  );
+
+  console.log(
+    "TASK UPDATE PENDING:",
+    JSON.stringify({
+      conversationKey,
+      taskId:
+        taskUpdate.taskId,
+      field:
+        taskUpdate.field,
+      value:
+        taskUpdate.value,
+      mapSize:
+        pendingTaskUpdateActions.size,
+    })
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      reply:
+        formatTaskUpdatePreview(
           taskUpdate
-        );
-
-        console.log(
-          "TASK UPDATE PENDING:",
-          JSON.stringify({
-            conversationKey,
-            taskId: taskUpdate.taskId,
-            field: taskUpdate.field,
-            value: taskUpdate.value,
-            mapSize: pendingTaskUpdateActions.size,
-          })
-        );
-
-        return res.json({
-          success: true,
-          data: {
-            reply:
-              formatTaskUpdatePreview(
-                taskUpdate
-              ),
-            intent:
-              "UPDATE_TASK",
-            requiresConfirmation:
-              true,
-            preview:
-              taskUpdate,
-          },
-        });
-      }
+        ),
+      intent:
+        "UPDATE_TASK",
+      requiresConfirmation:
+        true,
+      preview:
+        taskUpdate,
+    },
+  });
+}
 
       /* ------------------------------------------------------------------ */
       /* TASK DETAILS / QUERIES                                             */
