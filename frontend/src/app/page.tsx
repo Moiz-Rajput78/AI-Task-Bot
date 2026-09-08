@@ -2488,7 +2488,10 @@ export default function Home() {
 
             <div className="hidden min-w-0 flex-1 justify-center px-6 md:flex">
               <div className="relative w-full max-w-xl">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">⌕</span>
+               <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm text-slate-400">
+  🔍
+</span>
+
                 <input
                   value={globalSearch}
                   onChange={(event) => {
@@ -2496,7 +2499,8 @@ export default function Home() {
                     setShowGlobalSearch(Boolean(event.target.value.trim()));
                   }}
                   onFocus={() => setShowGlobalSearch(Boolean(globalSearch.trim()))}
-                  className="form-input pl-9 pr-4"
+                  className="form-input !pl-10 !pr-4"
+
                   placeholder="Search people, tasks, projects, skills..."
                   aria-label="Global search"
                 />
@@ -4331,7 +4335,8 @@ export default function Home() {
                             return (
                               <div
                                 key={status}
-                                className="min-w-[250px] rounded-2xl border border-slate-200 bg-slate-100/70 p-3 dark:border-slate-800 dark:bg-slate-900/60"
+                                className="min-w-[280px] rounded-2xl border border-slate-200 bg-slate-100/70 p-3 dark:border-slate-800 dark:bg-slate-900/60"
+
                               >
                                 <div className="mb-3 flex items-center justify-between px-1">
                                   <div className="flex items-center gap-2">
@@ -4427,31 +4432,38 @@ export default function Home() {
                                             </span>
                                           </div>
 
-                                          <div className="mt-3 flex items-start justify-between gap-2">
-                                            <h5 className="line-clamp-2 text-sm font-bold">
-                                              {task.title}
-                                            </h5>
-                                            <button
-                                              type="button"
-                                              onPointerDown={(event) => event.stopPropagation()}
-                                              onClick={() => void openTaskDetails(task)}
-                                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
-                                              aria-label="View task"
-                                              title="View task"
-                                            >
-                                              👁️ View
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onPointerDown={(event) => event.stopPropagation()}
-                                              onClick={() => void openEditTask(task)}
-                                              className="flex-shrink-0 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100 hover:text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"
-                                               aria-label="Edit task"
-                                               title="Edit task"
-                                             >
-                                               ✏️ Edit Task
-                                            </button>
-                                          </div>
+                                          <div className="mt-3 min-w-0">
+  {/* Task title */}
+  <h5 className="min-w-0 break-words text-sm font-bold leading-5">
+    {task.title}
+  </h5>
+
+  {/* Action buttons */}
+  <div className="mt-3 flex items-center gap-2">
+    <button
+      type="button"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={() => void openTaskDetails(task)}
+      className="flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+      aria-label="View task"
+      title="View task"
+    >
+      👁️ View
+    </button>
+
+    <button
+      type="button"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={() => void openEditTask(task)}
+      className="flex-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100 hover:text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"
+      aria-label="Edit task"
+      title="Edit task"
+    >
+      ✏️ Edit
+    </button>
+  </div>
+</div>
+
 
                                           {task.description && (
                                             <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
