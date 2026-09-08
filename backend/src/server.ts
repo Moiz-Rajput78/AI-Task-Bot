@@ -787,6 +787,25 @@ function isAllPeopleQueryRequest(message: string): boolean {
   return patterns.some((pattern) => pattern.test(normalized));
 }
 
+function isTeamSkillsQueryRequest(message: string): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const patterns = [
+    /^(?:show|list|display)\s+(?:me\s+|us\s+)?(?:our|the)\s+(?:team\s+)?skills$/,
+    /^(?:show|list|display)\s+(?:me\s+|us\s+)?(?:all\s+)?(?:team\s+)?skills$/,
+    /^(?:what|which)\s+(?:are\s+)?(?:our|the)\s+(?:team\s+)?skills$/,
+    /^what skills does (?:the )?team have$/,
+    /^what are the skills of (?:the )?team$/,
+    /^show me (?:all )?skills$/,
+    /^list (?:all )?skills$/,
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
+}
+
 function isPersonQueryRequest(message: string): boolean {
   const text = message
     .toLowerCase()
@@ -3228,7 +3247,6 @@ function isTaskUpdateRequest(
 /* -------------------------------------------------------------------------- */
 /* STATUS EXTRACTION                                                           */
 /* -------------------------------------------------------------------------- */
-
 function extractTaskStatus(
   message: string
 ): TaskStatus | null {
@@ -3238,28 +3256,10 @@ function extractTaskStatus(
     .trim();
 
   if (
-    text.includes("completed") ||
-    text.includes("complete") ||
-    text.includes("done") ||
-    text.includes("finished")
+    text.includes("backlog") ||
+    text.includes("back log")
   ) {
-    return "COMPLETED";
-  }
-
-  if (
-    text.includes("in progress") ||
-    text.includes("in-progress") ||
-    text.includes("started") ||
-    text.includes("working")
-  ) {
-    return "IN_PROGRESS";
-  }
-
-  if (
-    text.includes("blocked") ||
-    text.includes("block")
-  ) {
-    return "IN_PROGRESS";
+    return "BACKLOG";
   }
 
   if (
@@ -3269,6 +3269,33 @@ function extractTaskStatus(
     text.includes("pending")
   ) {
     return "TODO";
+  }
+
+  if (
+    text.includes("in progress") ||
+    text.includes("in-progress") ||
+    text.includes("in_progress") ||
+    text.includes("started") ||
+    text.includes("working")
+  ) {
+    return "IN_PROGRESS";
+  }
+
+  if (
+    text.includes("review") ||
+    text.includes("in review") ||
+    text.includes("under review")
+  ) {
+    return "REVIEW";
+  }
+
+  if (
+    text.includes("completed") ||
+    text.includes("complete") ||
+    text.includes("done") ||
+    text.includes("finished")
+  ) {
+    return "COMPLETED";
   }
 
   return null;
@@ -3516,7 +3543,7 @@ async function prepareTaskUpdate(
 
     if (!newStatus) {
       throw new Error(
-        "Please specify a valid task status such as TODO, IN_PROGRESS, COMPLETED, or BLOCKED."
+        "Please specify a valid task status such as BACKLOG, TODO, IN_PROGRESS, REVIEW, or COMPLETED."
       );
     }
 
@@ -5048,6 +5075,58 @@ function extractPersonId(message: string): number | null {
   const id = Number(match[1]);
 
   return Number.isInteger(id) ? id : null;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* TEAM SKILLS QUERY                                                   */
+/* ------------------------------------------------------------------ */
+
+if (isTeamSkillsQueryRequest(message)) {
+  const teamSkills = await prisma.skill.findMany({
+    orderBy: {
+      name: "asc",
+    },
+  });
+
+  if (teamSkills.length === 0) {
+    return res.json({
+      success: true,
+      data: {
+        reply: "There are currently no skills in the team skills list.",
+        intent: "SKILLS_QUERY",
+        requiresConfirmation: false,
+        skills: [],
+      },
+    });
+  }
+
+  const rows = teamSkills.map(
+    (skill) =>
+      `| ${skill.id} | ${skill.name} | ${
+        skill.description || "No description"
+      } |`
+  );
+
+  const reply = [
+    "### 🛠️ Team Skills",
+    "",
+    `I found **${teamSkills.length}** team skill(s).`,
+    "",
+    "| ID | Skill | Description |",
+    "| ---: | --- | --- |",
+    ...rows,
+  ].join("\n");
+
+  return res.json({
+    success: true,
+    data: {
+      reply,
+      intent: "SKILLS_QUERY",
+      requiresConfirmation: false,
+      skills: teamSkills,
+    },
+  });
 }
 
       /* ------------------------------------------------------------------ */
