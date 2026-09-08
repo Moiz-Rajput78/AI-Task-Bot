@@ -404,6 +404,29 @@ type PendingTaskUpdateAction = {
   departmentName?: string;
 };
 
+type PendingBulkTaskUpdateAction = {
+  intent: "UPDATE_ALL_TASKS";
+  field: "status";
+  value: TaskStatus;
+  displayValue: string;
+  taskCount: number;
+  tasks: Array<{
+    id: number;
+    title: string;
+    oldValue: string;
+  }>;
+};
+
+const pendingBulkTaskUpdateActions = new Map<
+  string,
+  PendingBulkTaskUpdateAction
+>();
+
+let lastPendingBulkTaskUpdate: {
+  conversationKey: string;
+  action: PendingBulkTaskUpdateAction;
+} | null = null;
+
 /* -------------------------------------------------------------------------- */
 /* PENDING PERSON UPDATE                                                      */
 /* -------------------------------------------------------------------------- */
@@ -3173,6 +3196,25 @@ function isExplicitAssigneeUpdate(
   );
 }
 
+function isBulkTaskStatusUpdateRequest(
+  message: string
+): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const hasAllTasksPhrase =
+    /\b(all|every)\s+(?:the\s+)?tasks?\b/i.test(text) ||
+    /\b(?:all|every)\s+(?:our\s+)?tasks?\b/i.test(text);
+
+  const hasStatusUpdate =
+    /\b(change|update|set|modify|move|mark|make|put)\b/i.test(text) &&
+    /\bstatus\b/i.test(text);
+
+  return hasAllTasksPhrase && hasStatusUpdate;
+}
+
 function isTaskUpdateRequest(
   message: string
 ): boolean {
@@ -3487,6 +3529,50 @@ function parseTaskDueDate(
   }
 
   return null;
+}
+
+
+
+async function prepareBulkTaskStatusUpdate(
+  message: string
+): Promise<PendingBulkTaskUpdateAction> {
+  const newStatus = extractTaskStatus(message);
+
+  if (!newStatus) {
+    throw new Error(
+      "Please specify a valid task status such as BACKLOG, TODO, IN_PROGRESS, REVIEW, or COMPLETED."
+    );
+  }
+
+  const tasks = await prisma.task.findMany({
+    orderBy: {
+      id: "asc",
+    },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+    },
+  });
+
+  if (tasks.length === 0) {
+    throw new Error(
+      "There are currently no tasks to update."
+    );
+  }
+
+  return {
+    intent: "UPDATE_ALL_TASKS",
+    field: "status",
+    value: newStatus,
+    displayValue: newStatus,
+    taskCount: tasks.length,
+    tasks: tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      oldValue: task.status,
+    })),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -4015,6 +4101,37 @@ async function applyTaskUpdate(
   return updatedTask;
 }
 
+
+async function applyBulkTaskStatusUpdate(
+  action: PendingBulkTaskUpdateAction
+) {
+  const status = action.value;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updated = await tx.task.updateMany({
+      data: {
+        status,
+        completed: status === "COMPLETED",
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        action: "TASKS_BULK_UPDATED",
+        entity: "Task",
+        details: `All ${updated.count} tasks had their status changed to "${status}" through AI`,
+        isAI: true,
+        aiReason:
+          "All task statuses were updated through the AI Task Bot.",
+      },
+    });
+
+    return updated;
+  });
+
+  return result;
+}
+
 /* -------------------------------------------------------------------------- */
 /* TASK UPDATE PREVIEW                                                        */
 /* -------------------------------------------------------------------------- */
@@ -4046,6 +4163,30 @@ function formatTaskUpdatePreview(
     "This is a preview only — **no changes have been made yet**.",
     "",
     "Would you like me to apply this change?",
+  ].join("\n");
+}
+
+
+function formatBulkTaskStatusPreview(
+  action: PendingBulkTaskUpdateAction
+): string {
+  const rows = action.tasks.map(
+    (task) =>
+      `| ${task.id} | ${task.title} | ${task.oldValue} | ${action.displayValue} |`
+  );
+
+  return [
+    "### ✏️ Bulk Task Status Update",
+    "",
+    `I found **${action.taskCount} task(s)**.`,
+    "",
+    "| ID | Task | Current Status | New Status |",
+    "| ---: | --- | --- | --- |",
+    ...rows,
+    "",
+    "This is a preview only — **no changes have been made yet**.",
+    "",
+    "Would you like me to apply this bulk update?",
   ].join("\n");
 }
 
@@ -4262,6 +4403,30 @@ app.post(
           ? lastPendingTaskUpdate?.action
           : undefined);
 
+      const pendingBulkTaskUpdate =
+  pendingBulkTaskUpdateActions.get(
+    conversationKey
+  );
+
+const bulkTaskUpdateKey =
+  pendingBulkTaskUpdate
+    ? conversationKey
+    : getPendingActionKey(
+        pendingBulkTaskUpdateActions,
+        conversationKey
+      );
+
+const effectivePendingBulkTaskUpdate =
+  pendingBulkTaskUpdate ||
+  (bulkTaskUpdateKey
+    ? pendingBulkTaskUpdateActions.get(
+        bulkTaskUpdateKey
+      )
+    : undefined) ||
+  (isConfirmation(message)
+    ? lastPendingBulkTaskUpdate?.action
+    : undefined);
+
       const taskCreationKey =
         pendingTask
           ? conversationKey
@@ -4443,6 +4608,52 @@ app.post(
           },
         });
       }
+
+
+
+      /* ------------------------------------------------------------------ */
+/* CONFIRM BULK TASK UPDATE                                          */
+/* ------------------------------------------------------------------ */
+
+if (
+  effectivePendingBulkTaskUpdate &&
+  effectivePendingBulkTaskUpdate.intent ===
+    "UPDATE_ALL_TASKS" &&
+  isConfirmation(message)
+) {
+  const confirmedBulkUpdate =
+    effectivePendingBulkTaskUpdate;
+
+  const result =
+    await applyBulkTaskStatusUpdate(
+      confirmedBulkUpdate
+    );
+
+  pendingBulkTaskUpdateActions.delete(
+  conversationKey
+);
+
+if (
+  lastPendingBulkTaskUpdate?.conversationKey ===
+  conversationKey
+) {
+  lastPendingBulkTaskUpdate = null;
+}
+
+  lastPendingBulkTaskUpdate = null;
+
+  return res.json({
+    success: true,
+    data: {
+      reply:
+        `✅ **${result.count} task(s)** have been updated successfully.\n\n**New status:** ${confirmedBulkUpdate.displayValue}`,
+      intent: "UPDATE_ALL_TASKS",
+      requiresConfirmation: false,
+      updatedCount: result.count,
+      status: confirmedBulkUpdate.value,
+    },
+  });
+}
 
       /* ------------------------------------------------------------------ */
       /* CONFIRM TASK UPDATE                                                */
