@@ -381,6 +381,10 @@ type PendingProjectAction = {
 /* PENDING TASK UPDATE                                                        */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* PENDING TASK UPDATE                                                        */
+/* -------------------------------------------------------------------------- */
+
 type TaskUpdateField =
   | "status"
   | "priority"
@@ -404,6 +408,10 @@ type PendingTaskUpdateAction = {
   departmentName?: string;
 };
 
+/* -------------------------------------------------------------------------- */
+/* PENDING BULK TASK STATUS UPDATE                                            */
+/* -------------------------------------------------------------------------- */
+
 type PendingBulkTaskUpdateAction = {
   intent: "UPDATE_ALL_TASKS";
   field: "status";
@@ -416,16 +424,6 @@ type PendingBulkTaskUpdateAction = {
     oldValue: string;
   }>;
 };
-
-const pendingBulkTaskUpdateActions = new Map<
-  string,
-  PendingBulkTaskUpdateAction
->();
-
-let lastPendingBulkTaskUpdate: {
-  conversationKey: string;
-  action: PendingBulkTaskUpdateAction;
-} | null = null;
 
 /* -------------------------------------------------------------------------- */
 /* PENDING PERSON UPDATE                                                      */
@@ -511,6 +509,11 @@ const pendingTaskUpdateActions = new Map<
   PendingTaskUpdateAction
 >();
 
+const pendingBulkTaskUpdateActions = new Map<
+  string,
+  PendingBulkTaskUpdateAction
+>();
+
 const pendingPersonUpdateActions = new Map<
   string,
   PendingPersonUpdateAction
@@ -522,6 +525,13 @@ const pendingPersonUpdateActions = new Map<
 let lastPendingTaskUpdate: {
   conversationKey: string;
   action: PendingTaskUpdateAction;
+} | null = null;
+
+// Keep the most recent bulk task-update confirmation outside the conversation
+// map for the same reason as the single-task fallback.
+let lastPendingBulkTaskUpdate: {
+  conversationKey: string;
+  action: PendingBulkTaskUpdateAction;
 } | null = null;
 
 // Keep the most recent task-creation confirmation as a resilient fallback.
@@ -581,6 +591,36 @@ function deletePendingTaskUpdate(
     conversationKey
   ) {
     lastPendingTaskUpdate = null;
+  }
+}
+
+function setPendingBulkTaskUpdate(
+  conversationKey: string,
+  action: PendingBulkTaskUpdateAction
+): void {
+  pendingBulkTaskUpdateActions.set(
+    conversationKey,
+    action
+  );
+
+  lastPendingBulkTaskUpdate = {
+    conversationKey,
+    action,
+  };
+}
+
+function deletePendingBulkTaskUpdate(
+  conversationKey: string
+): void {
+  pendingBulkTaskUpdateActions.delete(
+    conversationKey
+  );
+
+  if (
+    lastPendingBulkTaskUpdate?.conversationKey ===
+    conversationKey
+  ) {
+    lastPendingBulkTaskUpdate = null;
   }
 }
 
@@ -3226,6 +3266,8 @@ function isBulkTaskStatusUpdateRequest(
   return hasAllTasksPhrase && hasStatusUpdate;
 }
 
+
+
 function isTaskUpdateRequest(
   message: string
 ): boolean {
@@ -3300,6 +3342,10 @@ function isTaskUpdateRequest(
 /* -------------------------------------------------------------------------- */
 /* STATUS EXTRACTION                                                           */
 /* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/* STATUS EXTRACTION                                                          */
+/* -------------------------------------------------------------------------- */
+
 function extractTaskStatus(
   message: string
 ): TaskStatus | null {
@@ -3308,21 +3354,32 @@ function extractTaskStatus(
     .replace(/\s+/g, " ")
     .trim();
 
+  /* ------------------------------------------------------------------------ */
+  /* BACKLOG                                                                  */
+  /* ------------------------------------------------------------------------ */
+
   if (
-    text.includes("backlog") ||
-    text.includes("back log")
+    /\bbacklog\b/i.test(text) ||
+    /\bback\s+log\b/i.test(text)
   ) {
     return "BACKLOG";
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* REVIEW                                                                   */
+  /* ------------------------------------------------------------------------ */
+
   if (
-    text.includes("todo") ||
-    text.includes("to do") ||
-    text.includes("to-do") ||
-    text.includes("pending")
+    /\breview\b/i.test(text) ||
+    /\bin\s+review\b/i.test(text) ||
+    /\bunder\s+review\b/i.test(text)
   ) {
-    return "TODO";
+    return "REVIEW";
   }
+
+  /* ------------------------------------------------------------------------ */
+  /* IN PROGRESS                                                              */
+  /* ------------------------------------------------------------------------ */
 
   if (
     text.includes("in progress") ||
@@ -3334,19 +3391,28 @@ function extractTaskStatus(
     return "IN_PROGRESS";
   }
 
-  if (
-    text.includes("review") ||
-    text.includes("in review") ||
-    text.includes("under review")
-  ) {
-    return "REVIEW";
-  }
+  /* ------------------------------------------------------------------------ */
+  /* TODO                                                                     */
+  /* ------------------------------------------------------------------------ */
 
   if (
-    text.includes("completed") ||
-    text.includes("complete") ||
-    text.includes("done") ||
-    text.includes("finished")
+    /\btodo\b/i.test(text) ||
+    /\bto\s+do\b/i.test(text) ||
+    /\bto-do\b/i.test(text) ||
+    /\bpending\b/i.test(text)
+  ) {
+    return "TODO";
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* COMPLETED                                                                */
+  /* ------------------------------------------------------------------------ */
+
+  if (
+    /\bcompleted\b/i.test(text) ||
+    /\bcomplete\b/i.test(text) ||
+    /\bdone\b/i.test(text) ||
+    /\bfinished\b/i.test(text)
   ) {
     return "COMPLETED";
   }
