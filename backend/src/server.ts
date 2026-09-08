@@ -883,6 +883,213 @@ function extractPersonQueryName(
 }
 
 /* -------------------------------------------------------------------------- */
+/* FILTERED PEOPLE QUERY                                                      */
+/* -------------------------------------------------------------------------- */
+
+function isFilteredPeopleQueryRequest(message: string): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (isPersonCreationRequest(message)) {
+    return false;
+  }
+
+  if (isAvailabilityRequest(message) && !extractTaskId(message)) {
+    return false;
+  }
+
+  if (isAssignmentRequest(message)) {
+    return false;
+  }
+
+  if (isTaskUpdateRequest(message)) {
+    return false;
+  }
+
+  const queryPatterns = [
+    /^(?:show|list|display)\s+(?:me\s+|us\s+)?/i,
+    /^who\s+are\s+(?:the\s+)?/i,
+    /^which\s+(?:team\s+members|people|members)\s+/i,
+  ];
+
+  const hasQueryPattern = queryPatterns.some((pattern) =>
+    pattern.test(text)
+  );
+
+  if (!hasQueryPattern) {
+    return false;
+  }
+
+  const peopleTerms = [
+    "developer",
+    "developers",
+    "designer",
+    "designers",
+    "tester",
+    "testers",
+    "engineer",
+    "engineers",
+    "programmer",
+    "programmers",
+    "frontend",
+    "front-end",
+    "backend",
+    "back-end",
+    "full stack",
+    "full-stack",
+    "devops",
+    "qa",
+  ];
+
+  return peopleTerms.some((term) => text.includes(term));
+}
+
+function extractPeopleFilterText(message: string): string {
+  let text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[?!.]+$/, "")
+    .trim();
+
+  text = text
+    .replace(
+      /^(?:show|list|display)\s+(?:me\s+|us\s+)?/i,
+      ""
+    )
+    .replace(
+      /^who\s+are\s+(?:the\s+)?/i,
+      ""
+    )
+    .replace(
+      /^which\s+(?:team\s+members|people|members)\s+/i,
+      ""
+    )
+    .replace(
+      /^(?:all|the)\s+/i,
+      ""
+    )
+    .trim();
+
+  return text;
+}
+
+function normalizePeopleFilterWords(value: string): string[] {
+  const stopWords = new Set([
+    "a",
+    "an",
+    "the",
+    "all",
+    "our",
+    "team",
+    "people",
+    "person",
+    "persons",
+    "member",
+    "members",
+    "employee",
+    "employees",
+    "staff",
+    "who",
+    "are",
+    "is",
+    "with",
+    "having",
+    "have",
+    "has",
+    "working",
+    "works",
+    "work",
+    "in",
+    "on",
+    "of",
+    "for",
+  ]);
+
+  return value
+    .toLowerCase()
+    .replace(/[-_/]+/g, " ")
+    .replace(/[^a-z0-9+#.\s]/g, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter(Boolean)
+    .filter((word) => !stopWords.has(word));
+}
+
+async function findPeopleByFilter(filterText: string) {
+  const words = normalizePeopleFilterWords(filterText);
+
+  if (words.length === 0) {
+    return [];
+  }
+
+  const people = await prisma.person.findMany({
+    where: {
+      isActive: true,
+    },
+    include: {
+      department: true,
+      skills: {
+        include: {
+          skill: true,
+        },
+      },
+      assignedTasks: {
+        include: {
+          task: true,
+        },
+      },
+    },
+    orderBy: {
+      fullName: "asc",
+    },
+  });
+
+  return people.filter((person) => {
+    const searchableText = [
+      person.fullName,
+      person.jobTitle,
+      person.role,
+      person.department?.name,
+      person.preferredTaskTypes,
+      ...person.skills.map(
+        (item) => item.skill.name
+      ),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .replace(/[-_/]+/g, " ");
+
+    return words.every((word) => {
+      if (searchableText.includes(word)) {
+        return true;
+      }
+
+      // developer -> developers
+      // designer -> designers
+      // tester -> testers
+      if (
+        word.endsWith("s") &&
+        searchableText.includes(word.slice(0, -1))
+      ) {
+        return true;
+      }
+
+      if (
+        searchableText.includes(`${word}s`)
+      ) {
+        return true;
+      }
+
+      return false;
+    });
+  });
+}
+
+/* -------------------------------------------------------------------------- */
 /* SKILL EXTRACTION FOR PERSON OPERATIONS                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -1001,6 +1208,10 @@ async function findSkillByName(skillName: string) {
     null
   );
 }
+
+// `findDepartmentByName` is declared once in this file; the duplicate
+// implementation below was removed to satisfy the TypeScript duplicate
+// function declaration error.
 
 /* -------------------------------------------------------------------------- */
 /* PERSON UPDATE PREPARATION                                                  */
@@ -1877,25 +2088,46 @@ function isProjectMemberQueryRequest(message: string): boolean {
 
 function extractProjectManagementName(message: string): string | null {
   const patterns = [
-    /\b(?:change|update|set)\s+(.+?)\s+(?:status|state)\s+to\s+/i,
-    /\b(?:status|state)\s+of\s+(.+?)\s+to\s+/i,
-    /\bput\s+(.+?)\s+on\s+hold\b/i,
-    /\b(?:change|update|set)\s+(.+?)\s+due\s+date\s+to\s+/i,
-    /\b(?:change|update|set)\s+(?:the\s+)?manager\s+of\s+(.+?)\s+to\s+/i,
-    /\bset\s+(.+?)\s+as\s+manager\s+of\s+(.+?)(?:\?|$)/i,
+    /\b(?:change|update|set|make|put)\s+(?:the\s+)?(?:project\s+)?(.+?)\s+(?:status|state)\s+(?:to|as)\s+/i,
+
+    /\b(?:status|state)\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)\s+(?:to|as)\s+/i,
+
+    /\bput\s+(?:the\s+)?(?:project\s+)?(.+?)\s+on\s+hold\b/i,
+
+    /\b(?:change|update|set)\s+(?:the\s+)?(?:project\s+)?(.+?)\s+due\s+date\s+to\s+/i,
+
+    /\b(?:change|update|set)\s+(?:the\s+)?manager\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)\s+to\s+/i,
+
+    /\bset\s+(.+?)\s+as\s+(?:the\s+)?manager\s+of\s+(?:the\s+)?(?:project\s+)?(.+?)(?:\?|$)/i,
   ];
 
   for (const pattern of patterns) {
     const match = message.match(pattern);
-    if (match?.[1]) {
-      const value = match[2] || match[1];
-      return value
-        .trim()
-        .replace(/^the\s+/i, "")
-        .replace(/\s+project$/i, "")
-        .replace(/^['"]|['"]$/g, "")
-        .replace(/[?!.]+$/, "")
-        .trim();
+
+    if (!match) {
+      continue;
+    }
+
+    const value =
+      pattern === patterns[patterns.length - 1]
+        ? match[2]
+        : match[1];
+
+    if (!value) {
+      continue;
+    }
+
+    const cleaned = value
+      .trim()
+      .replace(/^the\s+/i, "")
+      .replace(/^project\s+/i, "")
+      .replace(/^[\"']|[\"']$/g, "")
+      .replace(/\s+project$/i, "")
+      .replace(/[?!.]+$/, "")
+      .trim();
+
+    if (cleaned) {
+      return cleaned;
     }
   }
 
@@ -2239,42 +2471,24 @@ function isProjectQueryRequest(
     return false;
   }
 
-  if (isProjectUpdateRequest(message) || isProjectMemberRequest(message)) {
+  if (isProjectUpdateRequest(message)) {
     return false;
   }
 
-  const projectWords = [
-    "project",
-    "projects",
-  ];
+  if (isProjectMemberRequest(message)) {
+    return false;
+  }
 
-  const queryWords = [
-    "show",
-    "list",
-    "details",
-    "detail",
-    "information",
-    "info",
-    "tasks",
-    "task",
-    "progress",
-    "status",
-    "working",
-    "members",
-    "team",
-    "who",
-    "how many",
-    "what",
-  ];
+  if (isProjectManagerQueryRequest(message)) {
+    return false;
+  }
 
-  return (
-    projectWords.some((word) =>
-      text.includes(word)
-    ) &&
-    queryWords.some((word) =>
-      text.includes(word)
-    )
-  );
+  if (isProjectMemberQueryRequest(message)) {
+    return false;
+  }
+
+  return /\b(?:project|projects)\b/i.test(text) &&
+    /\b(?:show|list|get|details|detail|info|information|who|what|progress|status|members|team\s+members|manager|manages)\b/i.test(text);
 }
 
 function extractProjectQueryName(
@@ -4840,20 +5054,110 @@ function extractPersonId(message: string): number | null {
       /* PERSON QUERIES                                                      */
       /* ------------------------------------------------------------------ */
 
-      if (
-        isPersonQueryRequest(
-          message
-        )
-      ) {
-        const text =
-          message.toLowerCase();
+     if (
+  isPersonQueryRequest(message)
+) {
+  const text =
+    message.toLowerCase();
 
-        const allPeopleQuery = isAllPeopleQueryRequest(message);
+  /* -------------------------------------------------------------- */
+  /* FILTERED PEOPLE QUERY                                          */
+  /* -------------------------------------------------------------- */
 
-        const personName = allPeopleQuery
-          ? null
-          : extractPersonQueryName(message);
+  if (
+    isFilteredPeopleQueryRequest(message)
+  ) {
+    const filterText =
+      extractPeopleFilterText(message);
 
+    const filteredPeople =
+      await findPeopleByFilter(filterText);
+
+    if (filteredPeople.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          reply:
+            `I couldn't find any active team members matching **${filterText}**.`,
+          intent:
+            "PEOPLE_QUERY",
+          requiresConfirmation:
+            false,
+          people: [],
+        },
+      });
+    }
+
+    const rows =
+      filteredPeople.map(
+        (person) => {
+          const activeTaskCount =
+            person.assignedTasks.filter(
+              (assignment) =>
+                assignment.task.status !==
+                "COMPLETED"
+            ).length;
+
+          const skills =
+            person.skills.length > 0
+              ? person.skills
+                  .map(
+                    (item) =>
+                      item.skill.name
+                  )
+                  .join(", ")
+              : "None";
+
+          return `| ${person.fullName} | ${
+            person.department?.name ||
+            "Not specified"
+          } | ${
+            person.jobTitle ||
+            "Not specified"
+          } | ${
+            person.role ||
+            "Not specified"
+          } | ${
+            person.availability
+          } | ${
+            activeTaskCount
+          } | ${
+            skills
+          } |`;
+        }
+      );
+
+    const reply = [
+      "### 👥 Matching Team Members",
+      "",
+      `I found **${filteredPeople.length}** team member(s) matching **${filterText}**.`,
+      "",
+      "| Team Member | Department | Job Title | Role | Availability | Active Tasks | Skills |",
+      "| --- | --- | --- | --- | --- | ---: | --- |",
+      ...rows,
+    ].join("\n");
+
+    return res.json({
+      success: true,
+      data: {
+        reply,
+        intent:
+          "PEOPLE_QUERY",
+        requiresConfirmation:
+          false,
+        people:
+          filteredPeople,
+      },
+    });
+  }
+
+  const allPeopleQuery =
+    isAllPeopleQueryRequest(message);
+
+  const personName =
+    allPeopleQuery
+      ? null
+      : extractPersonQueryName(message);
         /* -------------------------------------------------------------- */
         /* ALL PEOPLE                                                       */
         /* -------------------------------------------------------------- */
