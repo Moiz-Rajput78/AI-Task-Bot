@@ -835,18 +835,23 @@ function isPersonQueryRequest(message: string): boolean {
     .replace(/\s+/g, " ")
     .trim();
 
+  // Creation requests are not person queries.
   if (isPersonCreationRequest(message)) {
     return false;
   }
 
+  // Availability requests are not person queries unless
+  // they explicitly contain a task ID.
   if (isAvailabilityRequest(message) && !extractTaskId(message)) {
     return false;
   }
 
+  // Assignment requests are not person queries.
   if (isAssignmentRequest(message)) {
     return false;
   }
 
+  // Task update requests are not person queries.
   if (isTaskUpdateRequest(message)) {
     return false;
   }
@@ -885,11 +890,17 @@ function isPersonQueryRequest(message: string): boolean {
     "have",
   ];
 
-  return (
-    personWords.some((word) => text.includes(word)) &&
-    queryWords.some((word) => text.includes(word))
+  const hasPersonWord = personWords.some((word) =>
+    text.includes(word)
   );
+
+  const hasQueryWord = queryWords.some((word) =>
+    text.includes(word)
+  );
+
+  return hasPersonWord && hasQueryWord;
 }
+
 
 /* -------------------------------------------------------------------------- */
 /* PERSON NAME EXTRACTION FOR QUERIES                                         */
