@@ -4335,8 +4335,7 @@ export default function Home() {
                             return (
                               <div
                                 key={status}
-                                className="min-w-[280px] rounded-2xl border border-slate-200 bg-slate-100/70 p-3 dark:border-slate-800 dark:bg-slate-900/60"
-
+                                className="min-w-[250px] rounded-2xl border border-slate-200 bg-slate-100/70 p-3 dark:border-slate-800 dark:bg-slate-900/60"
                               >
                                 <div className="mb-3 flex items-center justify-between px-1">
                                   <div className="flex items-center gap-2">
