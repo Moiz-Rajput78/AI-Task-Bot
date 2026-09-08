@@ -578,7 +578,7 @@ export default function Home() {
     useState<AiMessage[]>([]);
   const [aiLoading, setAiLoading] =
     useState(false);
-  const [aiConversationId] =
+  const [aiConversationId, setAiConversationId] =
     useState(() => {
       if (typeof window === "undefined") {
         return "";
@@ -2187,7 +2187,6 @@ export default function Home() {
             "Content-Type": "application/json",
             Accept:
               "application/json, text/event-stream",
-            "x-conversation-id": conversationId,
           },
           body: requestBody,
         }
@@ -2260,10 +2259,6 @@ export default function Home() {
     try {
       const result =
         await performAiRequest(message);
-
-      // AI mutations happen in the backend. Refresh the workspace immediately
-      // so a confirmed status/priority/assignee change is visible on the board.
-      await loadAllData();
 
       setAiMessages((current) => [
         ...current,
@@ -4432,37 +4427,30 @@ export default function Home() {
                                             </span>
                                           </div>
 
-                                          <div className="mt-3 min-w-0">
-                                            <h5
-                                              className="min-w-0 break-words text-sm font-bold leading-5"
-                                              title={task.title}
-                                            >
+                                          <div className="mt-3 flex items-start justify-between gap-2">
+                                            <h5 className="line-clamp-2 text-sm font-bold">
                                               {task.title}
                                             </h5>
-
-                                            <div className="mt-2 flex min-w-0 items-center gap-2">
-                                              <button
-                                                type="button"
-                                                onPointerDown={(event) => event.stopPropagation()}
-                                                onClick={() => void openTaskDetails(task)}
-                                                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
-                                                aria-label="View task"
-                                                title="View task"
-                                              >
-                                                👁️ View
-                                              </button>
-
-                                              <button
-                                                type="button"
-                                                onPointerDown={(event) => event.stopPropagation()}
-                                                onClick={() => void openEditTask(task)}
-                                                className="min-w-0 flex-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100 hover:text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"
-                                                aria-label="Edit task"
-                                                title="Edit task"
-                                              >
-                                                ✏️ Edit
-                                              </button>
-                                            </div>
+                                            <button
+                                              type="button"
+                                              onPointerDown={(event) => event.stopPropagation()}
+                                              onClick={() => void openTaskDetails(task)}
+                                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                                              aria-label="View task"
+                                              title="View task"
+                                            >
+                                              👁️ View
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onPointerDown={(event) => event.stopPropagation()}
+                                              onClick={() => void openEditTask(task)}
+                                              className="flex-shrink-0 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100 hover:text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"
+                                               aria-label="Edit task"
+                                               title="Edit task"
+                                             >
+                                               ✏️ Edit Task
+                                            </button>
                                           </div>
 
                                           {task.description && (
@@ -6392,10 +6380,10 @@ export default function Home() {
                 <h3 className="text-lg font-black">Required Skills</h3>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {(selectedTask.skills || []).map((item, index) => {
-                    const skill = "skill" in item ? item.skill : item;
+                    const skill = "skill" in item ? item.skill : ("name" in item ? item : null);
                     if (!skill) return null;
                     return (
-                      <span key={skill.id || index} className="rounded-xl bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
+                      <span key={skill && "id" in skill ? skill.id : index} className="rounded-xl bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
                         🧩 {skill.name}
                       </span>
                     );

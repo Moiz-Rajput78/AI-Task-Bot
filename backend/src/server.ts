@@ -1,5 +1,8 @@
 import "dotenv/config";
 
+// TASK UPDATE CONFIRMATION FIX V2
+
+
 import cors from "cors";
 
 import express, {
@@ -115,6 +118,51 @@ function extractTaskId(message: string): number | null {
   }
 
   return null;
+}
+
+async function findTaskIdByName(message: string): Promise<number | null> {
+  const patterns = [
+    /\b(?:move|update|change|set|modify|mark|make)\s+(.+?)\s+task\s+(?:status|priority|assignee|assigned|project|department|due\s*date)\b/i,
+    /\b(?:move|update|change|set|modify|mark|make)\s+(?:the\s+)?task\s+["']?(.+?)["']?\s+(?:status|priority|assignee|assigned|project|department|due\s*date)\b/i,
+    /\btask\s+["']?(.+?)["']?\s+(?:status|priority|assignee|assigned|project|department|due\s*date)\b/i,
+  ];
+
+  let taskName: string | null = null;
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match?.[1]) {
+      taskName = match[1]
+        .trim()
+        .replace(/^["']|["']$/g, "")
+        .replace(/\s+(?:from|to)\s+(?:backlog|todo|in[_ -]?progress|review|completed|done|low|medium|high|urgent)\b.*$/i, "")
+        .trim();
+      if (taskName) break;
+    }
+  }
+
+  if (!taskName) return null;
+
+  const tasks = await prisma.task.findMany({
+    select: { id: true, title: true },
+  });
+
+  const normalizeTaskName = (value: string) =>
+    value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+  const wanted = normalizeTaskName(taskName);
+  if (!wanted) return null;
+
+  const exact = tasks.find(
+    (task) => normalizeTaskName(task.title) === wanted
+  );
+  if (exact) return exact.id;
+
+  const partial = tasks.find((task) => {
+    const title = normalizeTaskName(task.title);
+    return title.includes(wanted) || wanted.includes(title);
+  });
+
+  return partial?.id ?? null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -256,30 +304,41 @@ async function getAssignmentRecommendation(taskId: number) {
 /* PENDING PERSON CREATION                                                    */
 /* -------------------------------------------------------------------------- */
 
-type PendingPersonAction = {
-  intent: "CREATE_PERSON";
+type PendingPersonAction =
+  | {
+      intent: "CREATE_PERSON";
 
-  personName: string;
+      personName: string;
 
-  data?: {
-    fullName?: string;
-    email?: string;
-    phone?: string;
-    location?: string;
-    departmentId?: number;
-    departmentName?: string;
-    jobTitle?: string;
-    role?: string;
-    experience?: number;
-    employmentType?: string;
-    availability?: string;
-    bio?: string;
-    notes?: string;
-    preferredTaskTypes?: string;
-    skillIds?: number[];
-    skillNames?: string[];
-  };
-};
+      data?: {
+        fullName?: string;
+        email?: string;
+        phone?: string;
+        location?: string;
+        departmentId?: number;
+        departmentName?: string;
+        jobTitle?: string;
+        role?: string;
+        experience?: number;
+        employmentType?: string;
+        availability?: string;
+        bio?: string;
+        notes?: string;
+        preferredTaskTypes?: string;
+        skillIds?: number[];
+        skillNames?: string[];
+      };
+    }
+  | {
+      intent: "DELETE_PERSON";
+
+      personId: number;
+      personName: string;
+    };
+
+type PendingPersonCreateData = NonNullable<
+  Extract<PendingPersonAction, { intent: "CREATE_PERSON" }>['data']
+>;
 
 /* -------------------------------------------------------------------------- */
 /* PENDING TASK CREATION                                                      */
@@ -384,10 +443,6 @@ const pendingTaskActions = new Map<
   PendingTaskAction
 >();
 
-// Used when the bot asks the user to provide a missing task title.
-// This lets a follow-up such as "login page" continue the same task-creation flow.
-const pendingTaskTitleRequests = new Map<string, boolean>();
-
 const pendingProjectActions = new Map<
   string,
   PendingProjectAction
@@ -433,17 +488,26 @@ const pendingTaskUpdateActions = new Map<
   PendingTaskUpdateAction
 >();
 
-// Keep the latest task-update confirmation available even if the frontend
-// sends the follow-up "yes" with a different or missing conversationId.
+const pendingPersonUpdateActions = new Map<
+  string,
+  PendingPersonUpdateAction
+>();
+
+// Keep the most recent task-update confirmation outside the conversation map as
+// a resilient fallback for clients that reuse/change conversation identifiers
+// between the preview and the confirmation request.
 let lastPendingTaskUpdate: {
   conversationKey: string;
   action: PendingTaskUpdateAction;
 } | null = null;
 
-const pendingPersonUpdateActions = new Map<
-  string,
-  PendingPersonUpdateAction
->();
+// Keep the most recent task-creation confirmation as a resilient fallback.
+// This mirrors task-update confirmation and prevents a confirmation from being
+// lost when the client/session changes while the server is running.
+let lastPendingTaskCreation: {
+  conversationKey: string;
+  action: PendingTaskAction;
+} | null = null;
 
 /* -------------------------------------------------------------------------- */
 /* CONVERSATION KEY                                                           */
@@ -455,6 +519,46 @@ function getConversationKey(req: Request): string {
     normalizeText(req.headers["x-conversation-id"]) ||
     "default"
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* CONFIRMATION KEY FALLBACK                                                   */
+/* -------------------------------------------------------------------------- */
+
+function getPendingActionKey<T>(
+  map: Map<string, T>,
+  conversationKey: string
+): string | null {
+  if (map.has(conversationKey)) {
+    return conversationKey;
+  }
+
+  if (map.size === 1) {
+    return map.keys().next().value ?? null;
+  }
+
+  return null;
+}
+
+function setPendingTaskUpdate(
+  conversationKey: string,
+  action: PendingTaskUpdateAction
+): void {
+  pendingTaskUpdateActions.set(conversationKey, action);
+  lastPendingTaskUpdate = { conversationKey, action };
+}
+
+function deletePendingTaskUpdate(
+  conversationKey: string
+): void {
+  pendingTaskUpdateActions.delete(conversationKey);
+
+  if (
+    lastPendingTaskUpdate?.conversationKey ===
+    conversationKey
+  ) {
+    lastPendingTaskUpdate = null;
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -522,9 +626,7 @@ function isAutoFillPersonRequest(message: string): boolean {
   );
 }
 
-async function createPersonThroughAPI(
-  data: PendingPersonAction["data"]
-) {
+async function createPersonThroughAPI(data?: PendingPersonCreateData) {
   const response = await fetch(
     `http://localhost:${PORT}/api/people`,
     {
@@ -568,11 +670,46 @@ async function createPersonThroughAPI(
 /* PERSON SEARCH                                                              */
 /* -------------------------------------------------------------------------- */
 
+function isLikelyPersonName(fullName: string): boolean {
+  const normalized = fullName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+  if (!normalized) {
+    return false;
+  }
+
+  // Never treat conversational/task-assignment phrases as a person's name.
+  const invalidPhrases = [
+    "to the team",
+    "to team",
+    "for the team",
+    "for team",
+    "please",
+    "assign task",
+    "assigned to",
+    "as assignee",
+    "the team",
+  ];
+
+  return !invalidPhrases.some((phrase) =>
+    normalized.includes(phrase)
+  );
+}
+
 async function findPersonByName(
   personName: string,
   includeInactive = false
 ) {
-  const normalized = personName.trim().toLowerCase();
+  const normalized = personName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+  if (!normalized) {
+    return null;
+  }
 
   const people = await prisma.person.findMany({
     where: includeInactive
@@ -585,16 +722,43 @@ async function findPersonByName(
     },
   });
 
-  return (
-    people.find(
-      (person) =>
-        person.fullName.trim().toLowerCase() === normalized
-    ) ||
-    people.find((person) =>
-      person.fullName.toLowerCase().includes(normalized)
-    ) ||
-    null
+  // Ignore corrupted/conversational person records such as
+  // "ahmad to the team". Such text must never become a valid assignee.
+  const validPeople = people.filter((person) =>
+    isLikelyPersonName(person.fullName)
   );
+
+  // Prefer exact matches.
+  const exact = validPeople.find(
+    (person) =>
+      person.fullName.trim().toLowerCase() === normalized
+  );
+
+  if (exact) {
+    return exact;
+  }
+
+  // Allow a short first-name query such as "Ali" to resolve to "Ali Raza",
+  // but only against a clean person record. This prevents a record such as
+  // "Ahmad to the team" from matching the query "Ahmad".
+  const firstName = normalized.split(" ")[0];
+
+  if (normalized === firstName) {
+    const firstNameMatches = validPeople.filter((person) => {
+      const personFirstName =
+        person.fullName.trim().split(/\s+/)[0].toLowerCase();
+      return personFirstName === firstName;
+    });
+
+    if (firstNameMatches.length === 1) {
+      return firstNameMatches[0];
+    }
+
+    // If several people share the first name, don't guess.
+    return null;
+  }
+
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -623,17 +787,6 @@ function isAllPeopleQueryRequest(message: string): boolean {
   return patterns.some((pattern) => pattern.test(normalized));
 }
 
-function isTeamSkillsQueryRequest(message: string): boolean {
-  const text = message.toLowerCase().replace(/\s+/g, " ").trim();
-  return [
-    /\b(?:show|list|display|give|tell me)\s+(?:me\s+)?(?:our|the)?\s*team(?:'s|’s)?\s+skills\b/i,
-    /\bwhat\s+skills\s+(?:does|do)\s+(?:our|the)\s+team\s+have\b/i,
-    /\bwhat\s+are\s+(?:our|the)\s+team(?:'s|’s)?\s+skills\b/i,
-    /\bskills\s+(?:of|for)\s+(?:our|the)\s+team\b/i,
-    /\b(?:our|the)\s+team(?:'s|’s)?\s+skills\b/i,
-  ].some((pattern) => pattern.test(text));
-}
-
 function isPersonQueryRequest(message: string): boolean {
   const text = message
     .toLowerCase()
@@ -641,10 +794,6 @@ function isPersonQueryRequest(message: string): boolean {
     .trim();
 
   if (isPersonCreationRequest(message)) {
-    return false;
-  }
-
-  if (isTeamSkillsQueryRequest(message)) {
     return false;
   }
 
@@ -1661,23 +1810,20 @@ function isProjectUpdateRequest(message: string): boolean {
     return false;
   }
 
-  // Never treat read-only project/task queries as update commands.
-  // This is especially important when the AI classifier is uncertain.
-  if (
-    isProjectTaskQueryRequest(message) ||
-    isTeamSkillsQueryRequest(message) ||
-    isAllTasksQueryRequest(message) ||
-    isTaskQueryRequest(message)
-  ) {
+  // A command such as "move task 7 status from backlog to todo"
+  // contains generic project-update words (move/status), but it is a
+  // task update. Always let task-update handling take priority.
+  if (isTaskUpdateRequest(message)) {
     return false;
   }
 
-  const mentionsProject =
-    /\bproject\b/i.test(text) ||
-    /\bmanager\s+of\b/i.test(text) ||
-    /\bproject\s+manager\b/i.test(text);
-
-  if (!mentionsProject) {
+  // Project updates must explicitly mention a project (or project manager).
+  // This prevents generic status-update commands from entering the project flow.
+  if (
+    !/\bproject\b/i.test(text) &&
+    !/\bmanager\s+of\b/i.test(text) &&
+    !/\bproject\s+manager\b/i.test(text)
+  ) {
     return false;
   }
 
@@ -2081,32 +2227,6 @@ async function applyProjectMemberAction(action: PendingProjectMemberAction) {
 /* PROJECT QUERY HELPERS                                                      */
 /* -------------------------------------------------------------------------- */
 
-function isProjectTaskQueryRequest(message: string): boolean {
-  const text = message.toLowerCase().replace(/\s+/g, " ").trim();
-  if (isTaskCreationRequest(message) || isTaskUpdateRequest(message)) return false;
-  return [
-    /\b(?:show|list|display|get|give|tell me)\s+(?:me\s+)?(?:all\s+)?tasks?\s+(?:of|in|for|under)\s+(?:the\s+)?[^?!.]+/i,
-    /\btasks?\s+(?:of|in|for|under)\s+(?:the\s+)?[^?!.]+/i,
-    /\bwhat\s+(?:are|tasks?\s+are)\s+(?:the\s+)?(?:tasks?\s+)?(?:of|in|for|under)\s+(?:the\s+)?[^?!.]+/i,
-  ].some((pattern) => pattern.test(text));
-}
-
-function extractProjectTaskQueryName(message: string): string | null {
-  const patterns = [
-    /\b(?:show|list|display|get|give|tell me)\s+(?:me\s+)?(?:all\s+)?tasks?\s+(?:of|in|for|under)\s+(?:the\s+)?(.+?)(?:\s+projects?)?[?!.]?$/i,
-    /\btasks?\s+(?:of|in|for|under)\s+(?:the\s+)?(.+?)(?:\s+projects?)?[?!.]?$/i,
-    /\bwhat\s+(?:are|tasks?\s+are)\s+(?:the\s+)?(?:tasks?\s+)?(?:of|in|for|under)\s+(?:the\s+)?(.+?)(?:\s+projects?)?[?!.]?$/i,
-  ];
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    if (match?.[1]) {
-      const name = match[1].trim().replace(/^['"]|['"]$/g, "").replace(/\s+projects?$/i, "").replace(/[?!.]+$/, "").trim();
-      if (name) return name;
-    }
-  }
-  return null;
-}
-
 function isProjectQueryRequest(
   message: string
 ): boolean {
@@ -2117,10 +2237,6 @@ function isProjectQueryRequest(
 
   if (isProjectCreationRequest(message)) {
     return false;
-  }
-
-  if (isProjectTaskQueryRequest(message)) {
-    return true;
   }
 
   if (isProjectUpdateRequest(message) || isProjectMemberRequest(message)) {
@@ -2167,7 +2283,7 @@ function extractProjectQueryName(
   const patterns = [
     /\b(?:details|detail|information|info)\s+(?:of|about|for)\s+(.+?)(?:\?|$)/i,
     /\b(?:show|tell me about)\s+(.+?)\s+project(?:\s+details)?(?:\?|$)/i,
-    /\b(?:tasks|task)\s+(?:of|in|for|under)\s+(?:the\s+)?(.+?)(?:\s+projects?)?(?:\?|$)/i,
+    /\b(?:tasks|task)\s+(?:in|for|under)\s+(.+?)(?:\?|$)/i,
     /\b(?:who is working on|who works on|team working on)\s+(.+?)(?:\?|$)/i,
     /\b(?:progress|status)\s+(?:of|for)\s+(.+?)(?:\?|$)/i,
     /\b(?:members|team members)\s+(?:of|for)\s+(.+?)(?:\?|$)/i,
@@ -2205,7 +2321,9 @@ function isTaskCreationRequest(
     .trim();
 
   const patterns = [
+    /\bcreate\s+(?:a\s+)?(?:urgent|high|medium|low)\s+priority\s+task\b/i,
     /\bcreate\s+(?:a\s+)?task\b/i,
+    /\badd\s+(?:a\s+)?(?:urgent|high|medium|low)\s+priority\s+task\b/i,
     /\badd\s+(?:a\s+)?task\b/i,
     /\bmake\s+(?:a\s+)?task\b/i,
     /\bcreate\s+(?:a\s+)?todo\b/i,
@@ -2226,40 +2344,45 @@ function isTaskCreationRequest(
 function extractTaskTitle(
   message: string
 ): string | null {
-  const text = message
-    .replace(/\s+/g, " ")
-    .trim();
-
   const patterns = [
+    /\bcreate\s+(?:a\s+)?(?:urgent|high|medium|low)\s+priority\s+task\s+(?:called|named|titled)\s+["']?(.+?)["']?\s+for\s+(?:the\s+)?[^.?!]+?\s+department[.?!]?$/i,
+    /\bcreate\s+(?:a\s+)?(?:urgent|high|medium|low)\s+priority\s+task\s+(?:called|named|titled)\s+["']?(.+?)["']?$/i,
     /\bcreate\s+(?:a\s+)?task\s+(?:called|named|titled)\s+["']?(.+?)["']?$/i,
     /\bcreate\s+(?:a\s+)?task\s+(?:for|to)\s+["']?([^"'.]+)["']?/i,
     /\badd\s+(?:a\s+)?task\s+(?:called|named|titled)\s+["']?(.+?)["']?$/i,
-    /\badd\s+(?:a\s+)?task\s+(?:for|to)\s+["']?([^"'.]+)["']?/i,
-    /\bmake\s+(?:a\s+)?task\s+(?:called|named|titled)\s+["']?(.+?)["']?$/i,
     /\bcreate\s+["']([^"']+)["']\s+task/i,
     /\bnew\s+task\s+(?:called|named|titled)\s+["']?(.+?)["']?$/i,
     /\bcreate\s+(?:a\s+)?task\s*[:\-]\s*["']?(.+?)["']?$/i,
     /\badd\s+(?:a\s+)?task\s*[:\-]\s*["']?(.+?)["']?$/i,
-
-    // Natural language: "create a task build the login page"
-    /\bcreate\s+(?:a\s+)?task\s+(.+?)(?=\s+(?:for|in)\s+(?:the\s+)?[a-zA-Z0-9][a-zA-Z0-9\s&_-]{0,80}\s+project\b|$)/i,
-    /\badd\s+(?:a\s+)?task\s+(.+?)(?=\s+(?:for|in)\s+(?:the\s+)?[a-zA-Z0-9][a-zA-Z0-9\s&_-]{0,80}\s+project\b|$)/i,
-    /\bmake\s+(?:a\s+)?task\s+(.+?)(?=\s+(?:for|in)\s+(?:the\s+)?[a-zA-Z0-9][a-zA-Z0-9\s&_-]{0,80}\s+project\b|$)/i,
   ];
 
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    const match = message.match(pattern);
 
     if (match?.[1]) {
-      const title = match[1]
+      let title = match[1]
         .trim()
         .replace(/^["']|["']$/g, "")
         .replace(/[.,!?]+$/, "")
         .trim();
 
-      if (title) {
-        return title;
-      }
+      // Strip optional metadata that belongs to the task fields, not its title.
+      title = title
+        .replace(
+          /\s+(?:with\s+)?(?:urgent|high|medium|low)\s+priority\b[\s\S]*$/i,
+          ""
+        )
+        .replace(
+          /\s+(?:and\s+)?due\s+(?:date|on|by)\b[\s\S]*$/i,
+          ""
+        )
+        .replace(
+          /\s+for\s+(?:the\s+)?[^.?!]+?\s+department\b[\s\S]*$/i,
+          ""
+        )
+        .trim();
+
+      return title || null;
     }
   }
 
@@ -2505,6 +2628,9 @@ async function prepareTaskCreation(
     departmentId = department.id;
   }
 
+  const dueDate =
+    parseTaskDueDate(message);
+
   const requestedSkillNames =
     extractRequiredSkillNames(
       message
@@ -2571,6 +2697,10 @@ async function prepareTaskCreation(
       extractPriority(message),
     status:
       "TODO",
+    dueDate:
+      dueDate
+        ? dueDate.toISOString()
+        : undefined,
     skillIds,
     skillNames,
     missingSkillNames,
@@ -2818,11 +2948,19 @@ function isTaskUpdateRequest(
     .replace(/\s+/g, " ")
     .trim();
 
-  const taskId =
-    extractTaskId(message);
+  const taskId = extractTaskId(message);
 
+  // Natural-language task commands may refer to a task by its title instead
+  // of a numeric ID, e.g. "move learn react task status from backlog to todo".
+  // We cannot query Prisma from this synchronous detector, so recognize the
+  // shape here and resolve the title asynchronously in prepareTaskUpdate().
   if (!taskId) {
-    return false;
+    const hasTaskWord = /\btask\b/i.test(text);
+    const hasUpdateWord = /\b(change|update|set|modify|move|reassign|mark|make)\b/i.test(text);
+    const hasFieldWord = /\b(status|priority|assignee|assigned|project|department|due\s*date)\b/i.test(text);
+    if (!(hasTaskWord && hasUpdateWord && hasFieldWord)) {
+      return false;
+    }
   }
 
   if (isTaskCreationRequest(message)) {
@@ -2867,14 +3005,9 @@ function isTaskUpdateRequest(
       text.includes(word)
     );
 
-  const hasStatusDestination =
-    /\b(?:to|as|into)\s+(?:backlog|todo|to\s+do|to-do|in\s+progress|in-progress|review|completed|complete|done|pending)\b/i.test(
-      text
-    );
-
   return (
     hasUpdateWord &&
-    (hasFieldWord || hasStatusDestination)
+    hasFieldWord
   );
 }
 
@@ -2909,9 +3042,10 @@ function extractTaskStatus(
   }
 
   if (
-    text.includes("backlog")
+    text.includes("blocked") ||
+    text.includes("block")
   ) {
-    return "BACKLOG";
+    return "IN_PROGRESS";
   }
 
   if (
@@ -2980,23 +3114,31 @@ function extractAssigneeName(
   message: string
 ): string | null {
   const patterns = [
-    /\bassign\s+task\s+\d+\s+to\s+(.+?)(?:\?|$)/i,
-    /\breassign\s+task\s+\d+\s+to\s+(.+?)(?:\?|$)/i,
-    /\btask\s+\d+\s+(?:should\s+be|is)\s+assigned\s+to\s+(.+?)(?:\?|$)/i,
-    /\bchange\s+(?:the\s+)?assignee\s+(?:of\s+)?task\s+\d+\s+to\s+(.+?)(?:\?|$)/i,
-    /\bchange\s+task\s+\d+\s+assignee\s+to\s+(.+?)(?:\?|$)/i,
+    /\bassign\s+task\s+\d+\s+to\s+(.+?)(?=\s+(?:and|but)\s+.+?\s+to\s+the\s+team\b|\s+to\s+the\s+team\b|\?|$)/i,
+    /\breassign\s+task\s+\d+\s+to\s+(.+?)(?=\s+(?:and|but)\s+.+?\s+to\s+the\s+team\b|\s+to\s+the\s+team\b|\?|$)/i,
+    /\btask\s+\d+\s+(?:should\s+be|is)\s+assigned\s+to\s+(.+?)(?=\s+(?:and|but)\s+.+?\s+to\s+the\s+team\b|\s+to\s+the\s+team\b|\?|$)/i,
+    /\bchange\s+(?:the\s+)?assignee\s+(?:of\s+)?task\s+\d+\s+to\s+(.+?)(?=\s+(?:and|but)\s+.+?\s+to\s+the\s+team\b|\s+to\s+the\s+team\b|\?|$)/i,
+    /\bchange\s+task\s+\d+\s+assignee\s+to\s+(.+?)(?=\s+(?:and|but)\s+.+?\s+to\s+the\s+team\b|\s+to\s+the\s+team\b|\?|$)/i,
   ];
 
   for (const pattern of patterns) {
-    const match =
-      message.match(pattern);
+    const match = message.match(pattern);
 
     if (match?.[1]) {
-      return match[1]
+      const candidate = match[1]
         .trim()
         .replace(/^["']|["']$/g, "")
         .replace(/[.!?]+$/, "")
         .trim();
+
+      // Never pass conversational suffixes such as
+      // "to the team" or "and Ahmad to the team" into the person lookup.
+      const cleaned = candidate
+        .replace(/\s+to\s+the\s+team\b.*$/i, "")
+        .replace(/\s+(?:and|but)\s+.+$/i, "")
+        .trim();
+
+      return cleaned || null;
     }
   }
 
@@ -3113,12 +3255,15 @@ function parseTaskDueDate(
 async function prepareTaskUpdate(
   message: string
 ): Promise<PendingTaskUpdateAction> {
-  const taskId =
-    extractTaskId(message);
+  let taskId = extractTaskId(message);
+
+  if (!taskId) {
+    taskId = await findTaskIdByName(message);
+  }
 
   if (!taskId) {
     throw new Error(
-      "Please provide a task ID."
+      "I couldn't identify the task. Please provide the task ID or the exact task name."
     );
   }
 
@@ -3149,17 +3294,6 @@ async function prepareTaskUpdate(
 
   if (
     text.includes("status") ||
-    text.includes("backlog") ||
-    text.includes("todo") ||
-    text.includes("to do") ||
-    text.includes("to-do") ||
-    text.includes("in progress") ||
-    text.includes("in-progress") ||
-    text.includes("review") ||
-    text.includes("completed") ||
-    text.includes("complete") ||
-    text.includes("done") ||
-    text.includes("pending") ||
     text.includes("mark task") ||
     text.includes("mark the task")
   ) {
@@ -3168,7 +3302,7 @@ async function prepareTaskUpdate(
 
     if (!newStatus) {
       throw new Error(
-        "Please specify a valid task status such as BACKLOG, TODO, IN_PROGRESS, REVIEW, or COMPLETED."
+        "Please specify a valid task status such as TODO, IN_PROGRESS, COMPLETED, or BLOCKED."
       );
     }
 
@@ -3678,20 +3812,6 @@ function formatTaskUpdatePreview(
 /* TASK QUERY HELPERS                                                         */
 /* -------------------------------------------------------------------------- */
 
-function isAllTasksQueryRequest(message: string): boolean {
-  const text = message.toLowerCase().replace(/\s+/g, " ").trim();
-  if (isTaskCreationRequest(message) || isTaskUpdateRequest(message) || isAssignmentRequest(message) || isProjectTaskQueryRequest(message)) return false;
-  return [
-    /^show\s+(?:me\s+)?(?:all\s+)?tasks?$/i,
-    /^list\s+(?:all\s+)?tasks?$/i,
-    /^display\s+(?:all\s+)?tasks?$/i,
-    /^get\s+(?:all\s+)?tasks?$/i,
-    /^what\s+are\s+(?:all\s+)?tasks?$/i,
-    /^show\s+(?:me\s+)?(?:the\s+)?tasks?$/i,
-    /^list\s+(?:the\s+)?tasks?$/i,
-  ].some((pattern) => pattern.test(text));
-}
-
 function isTaskQueryRequest(
   message: string
 ): boolean {
@@ -3823,7 +3943,7 @@ function formatTaskDetails(
 /* -------------------------------------------------------------------------- */
 
 app.post(
-  ["/api/ai", "/api/ai/chat"],
+  "/api/ai",
   async (
     req: Request,
     res: Response
@@ -3874,15 +3994,82 @@ app.post(
       const pendingTaskUpdate =
         pendingTaskUpdateActions.get(
           conversationKey
-        ) ||
-        (isConfirmation(message) && lastPendingTaskUpdate
-          ? lastPendingTaskUpdate.action
-          : undefined);
+        );
 
       const pendingPersonUpdate =
         pendingPersonUpdateActions.get(
           conversationKey
         );
+
+      // Confirmation messages can arrive from a session created before the
+      // frontend started sending conversationId. Reconcile that safely by
+      // using the only pending action when the requested key has none.
+      const taskUpdateKey =
+        pendingTaskUpdate
+          ? conversationKey
+          : getPendingActionKey(
+              pendingTaskUpdateActions,
+              conversationKey
+            );
+
+      const effectivePendingTaskUpdate =
+        pendingTaskUpdate ||
+        (taskUpdateKey
+          ? pendingTaskUpdateActions.get(taskUpdateKey)
+          : undefined) ||
+        (isConfirmation(message)
+          ? lastPendingTaskUpdate?.action
+          : undefined);
+
+      const taskCreationKey =
+        pendingTask
+          ? conversationKey
+          : getPendingActionKey(
+              pendingTaskActions,
+              conversationKey
+            );
+
+      const effectivePendingTaskCreation =
+        pendingTask ||
+        (taskCreationKey
+          ? pendingTaskActions.get(taskCreationKey)
+          : undefined) ||
+        (isConfirmation(message)
+          ? lastPendingTaskCreation?.action
+          : undefined);
+
+      const personUpdateKey =
+        pendingPersonUpdate
+          ? conversationKey
+          : getPendingActionKey(
+              pendingPersonUpdateActions,
+              conversationKey
+            );
+
+      const effectivePendingPersonUpdate =
+        pendingPersonUpdate ||
+        (personUpdateKey
+          ? pendingPersonUpdateActions.get(personUpdateKey)
+          : undefined);
+
+      console.log(
+        "AI CONFIRMATION STATE:",
+        JSON.stringify({
+          message,
+          conversationKey,
+          hasPendingTaskUpdate: Boolean(effectivePendingTaskUpdate),
+          pendingTaskUpdateMapSize: pendingTaskUpdateActions.size,
+          lastPendingTaskUpdateConversationKey:
+            lastPendingTaskUpdate?.conversationKey || null,
+          hasLastPendingTaskUpdate: Boolean(lastPendingTaskUpdate),
+          hasPendingTaskCreation: Boolean(effectivePendingTaskCreation),
+          pendingTaskCreationMapSize: pendingTaskActions.size,
+          lastPendingTaskCreationConversationKey:
+            lastPendingTaskCreation?.conversationKey || null,
+          hasLastPendingTaskCreation: Boolean(lastPendingTaskCreation),
+          hasPendingPersonUpdate: Boolean(effectivePendingPersonUpdate),
+        })
+      );
 
       /* ------------------------------------------------------------------ */
       /* CANCELLATION                                                       */
@@ -3897,9 +4084,12 @@ app.post(
           conversationKey
         );
 
-        pendingTaskTitleRequests.delete(
+        if (
+          lastPendingTaskCreation?.conversationKey ===
           conversationKey
-        );
+        ) {
+          lastPendingTaskCreation = null;
+        }
 
         pendingProjectActions.delete(
           conversationKey
@@ -3913,15 +4103,10 @@ app.post(
           conversationKey
         );
 
-        pendingTaskUpdateActions.delete(
+        deletePendingTaskUpdate(
           conversationKey
         );
-
-        if (
-          lastPendingTaskUpdate?.conversationKey === conversationKey
-        ) {
-          lastPendingTaskUpdate = null;
-        }
+        lastPendingTaskUpdate = null;
 
         pendingPersonUpdateActions.delete(
           conversationKey
@@ -3943,61 +4128,64 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        pendingPersonUpdate &&
-        pendingPersonUpdate.intent ===
+        effectivePendingPersonUpdate &&
+        effectivePendingPersonUpdate.intent ===
           "UPDATE_PERSON" &&
         isConfirmation(message)
       ) {
+        const confirmedPersonUpdate =
+          effectivePendingPersonUpdate;
+
         const updatedPerson =
           await applyPersonUpdate(
-            pendingPersonUpdate
+            confirmedPersonUpdate
           );
 
         pendingPersonUpdateActions.delete(
-          conversationKey
+          personUpdateKey || conversationKey
         );
 
         let successMessage =
-          `✅ **${updatedPerson?.fullName || pendingPersonUpdate.personName}** has been updated successfully.`;
+          `✅ **${updatedPerson?.fullName || confirmedPersonUpdate.personName}** has been updated successfully.`;
 
         if (
-          pendingPersonUpdate.field ===
+          confirmedPersonUpdate.field ===
           "skills_add"
         ) {
           successMessage +=
-            `\n\n**Skill added:** ${pendingPersonUpdate.skillName}`;
+            `\n\n**Skill added:** ${confirmedPersonUpdate.skillName}`;
         }
 
         else if (
-          pendingPersonUpdate.field ===
+          confirmedPersonUpdate.field ===
           "skills_remove"
         ) {
           successMessage +=
-            `\n\n**Skill removed:** ${pendingPersonUpdate.skillName}`;
+            `\n\n**Skill removed:** ${confirmedPersonUpdate.skillName}`;
         }
 
         else if (
-          pendingPersonUpdate.field ===
+          confirmedPersonUpdate.field ===
           "department"
         ) {
           successMessage +=
-            `\n\n**New department:** ${pendingPersonUpdate.displayValue}`;
+            `\n\n**New department:** ${confirmedPersonUpdate.displayValue}`;
         }
 
         else if (
-          pendingPersonUpdate.field ===
+          confirmedPersonUpdate.field ===
           "availability"
         ) {
           successMessage +=
-            `\n\n**New availability:** ${pendingPersonUpdate.displayValue}`;
+            `\n\n**New availability:** ${confirmedPersonUpdate.displayValue}`;
         }
 
         else if (
-          pendingPersonUpdate.field ===
+          confirmedPersonUpdate.field ===
           "active"
         ) {
           successMessage +=
-            `\n\n**New account status:** ${pendingPersonUpdate.displayValue}`;
+            `\n\n**New account status:** ${confirmedPersonUpdate.displayValue}`;
         }
 
         return res.json({
@@ -4020,32 +4208,46 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        pendingTaskUpdate &&
-        pendingTaskUpdate.intent ===
+        effectivePendingTaskUpdate &&
+        effectivePendingTaskUpdate.intent ===
           "UPDATE_TASK" &&
         isConfirmation(message)
       ) {
+        console.log(
+          "TASK UPDATE CONFIRMATION MATCHED:",
+          JSON.stringify({
+            conversationKey,
+            source: pendingTaskUpdate
+              ? "conversation"
+              : taskUpdateKey
+                ? "fallback-map"
+                : "last-pending",
+            taskId: effectivePendingTaskUpdate.taskId,
+            field: effectivePendingTaskUpdate.field,
+            value: effectivePendingTaskUpdate.value,
+          })
+        );
+        const confirmedTaskUpdate =
+          effectivePendingTaskUpdate;
+
         const updatedTask =
           await applyTaskUpdate(
-            pendingTaskUpdate
+            confirmedTaskUpdate
           );
 
-        pendingTaskUpdateActions.delete(
-          conversationKey
+        deletePendingTaskUpdate(
+          taskUpdateKey ||
+            lastPendingTaskUpdate?.conversationKey ||
+            conversationKey
         );
 
-        if (
-          lastPendingTaskUpdate &&
-          lastPendingTaskUpdate.action === pendingTaskUpdate
-        ) {
-          lastPendingTaskUpdate = null;
-        }
+        lastPendingTaskUpdate = null;
 
         let successMessage =
           `✅ Task **#${updatedTask.id} — ${updatedTask.title}** has been updated successfully.`;
 
         if (
-          pendingTaskUpdate.field ===
+          confirmedTaskUpdate.field ===
           "status"
         ) {
           successMessage +=
@@ -4053,7 +4255,7 @@ app.post(
         }
 
         else if (
-          pendingTaskUpdate.field ===
+          confirmedTaskUpdate.field ===
           "priority"
         ) {
           successMessage +=
@@ -4061,35 +4263,35 @@ app.post(
         }
 
         else if (
-          pendingTaskUpdate.field ===
+          confirmedTaskUpdate.field ===
           "assignee"
         ) {
           successMessage +=
-            `\n\n**New assignee:** ${pendingTaskUpdate.displayValue}`;
+            `\n\n**New assignee:** ${confirmedTaskUpdate.displayValue}`;
         }
 
         else if (
-          pendingTaskUpdate.field ===
+          confirmedTaskUpdate.field ===
           "project"
         ) {
           successMessage +=
-            `\n\n**New project:** ${pendingTaskUpdate.displayValue}`;
+            `\n\n**New project:** ${confirmedTaskUpdate.displayValue}`;
         }
 
         else if (
-          pendingTaskUpdate.field ===
+          confirmedTaskUpdate.field ===
           "department"
         ) {
           successMessage +=
-            `\n\n**New department:** ${pendingTaskUpdate.displayValue}`;
+            `\n\n**New department:** ${confirmedTaskUpdate.displayValue}`;
         }
 
         else if (
-          pendingTaskUpdate.field ===
+          confirmedTaskUpdate.field ===
           "dueDate"
         ) {
           successMessage +=
-            `\n\n**New due date:** ${pendingTaskUpdate.displayValue}`;
+            `\n\n**New due date:** ${confirmedTaskUpdate.displayValue}`;
         }
 
         return res.json({
@@ -4180,7 +4382,7 @@ app.post(
             );
 
         const generatedData:
-          PendingPersonAction["data"] =
+          PendingPersonCreateData =
           {
             fullName:
               safeName,
@@ -4281,6 +4483,91 @@ app.post(
       /* ------------------------------------------------------------------ */
       /* CONFIRM PERSON CREATION                                            */
       /* ------------------------------------------------------------------ */
+
+
+            /* ------------------------------------------------------------------ */
+      /* CONFIRM PERSON DELETION                                            */
+      /* ------------------------------------------------------------------ */
+
+      if (
+        pendingPerson &&
+        pendingPerson.intent ===
+          "DELETE_PERSON" &&
+        isConfirmation(message)
+      ) {
+        const confirmedPersonDeletion =
+          pendingPerson;
+
+        try {
+          const deleteResponse =
+            await fetch(
+              `http://localhost:${PORT}/api/people/${confirmedPersonDeletion.personId}`,
+              {
+                method: "DELETE",
+                headers: {
+                  "Content-Type":
+                    "application/json",
+                },
+              }
+            );
+
+          const deleteData =
+            await deleteResponse.json();
+
+          pendingPersonActions.delete(
+            conversationKey
+          );
+
+          if (
+            !deleteResponse.ok ||
+            !deleteData?.success
+          ) {
+            return res.json({
+              success: true,
+              data: {
+                reply:
+                  deleteData?.message ||
+                  `I couldn't remove **${confirmedPersonDeletion.personName}**.`,
+                intent:
+                  "DELETE_PERSON",
+                requiresConfirmation:
+                  false,
+              },
+            });
+          }
+
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                `✅ **${confirmedPersonDeletion.personName}** has been removed from the team successfully.`,
+              intent:
+                "DELETE_PERSON",
+              requiresConfirmation:
+                false,
+              person:
+                deleteData.data,
+            },
+          });
+        } catch (error) {
+          console.error(
+            "Failed to delete person through AI:",
+            error
+          );
+
+          return res.status(500).json({
+            success: false,
+            data: {
+              reply:
+                "I couldn't remove the team member because an error occurred while contacting the people service.",
+              intent:
+                "DELETE_PERSON",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
+      }
 
       if (
         pendingPerson &&
@@ -4401,6 +4688,100 @@ app.post(
       /* START PERSON UPDATE                                                */
       /* ------------------------------------------------------------------ */
 
+            /* ------------------------------------------------------------------ */
+      /* START PERSON DELETION                                              */
+      /* ------------------------------------------------------------------ */
+
+      if (
+        isPersonDeletionRequest(
+          message
+        )
+      ) {
+        const personId =
+          extractPersonId(
+            message
+          );
+
+        if (
+          personId === null
+        ) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                "Please provide the team member ID you want to remove.",
+              intent:
+                "DELETE_PERSON",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
+
+        const person =
+          await prisma.person.findUnique({
+            where: {
+              id: personId,
+            },
+          });
+
+        if (!person) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                `I couldn't find a team member with ID **${personId}**.`,
+              intent:
+                "DELETE_PERSON",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
+
+        if (!person.isActive) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                `**${person.fullName}** (ID ${personId}) is already inactive.`,
+              intent:
+                "DELETE_PERSON",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
+
+        const pendingDeletion:
+          PendingPersonAction = {
+            intent:
+              "DELETE_PERSON",
+            personId,
+            personName:
+              person.fullName,
+          };
+
+        pendingPersonActions.set(
+          conversationKey,
+          pendingDeletion
+        );
+
+        return res.json({
+          success: true,
+          data: {
+            reply:
+              `⚠️ Are you sure you want to remove the team member **${person.fullName}** (ID ${personId}) from the system?\n\nThis will deactivate the team member and mark them as inactive.`,
+            intent:
+              "DELETE_PERSON",
+            requiresConfirmation:
+              true,
+            preview:
+              pendingDeletion,
+          },
+        });
+      }
+
       if (
         isPersonUpdateRequest(
           message
@@ -4432,63 +4813,28 @@ app.post(
           },
         });
       }
+      function isPersonDeletionRequest(message: string): boolean {
+  const text = normalizeText(message);
 
-      /* ------------------------------------------------------------------ */
-      /* TEAM SKILLS QUERY                                                   */
-      /* ------------------------------------------------------------------ */
+  return (
+    /\b(remove|delete|deactivate)\b/.test(text) &&
+    /\b(team member|member|person|employee|team)\b/.test(text)
+  );
+}
 
-      if (isTeamSkillsQueryRequest(message)) {
-        const teamMembers = await prisma.person.findMany({
-          where: { isActive: true },
-          include: { skills: { include: { skill: true } } },
-          orderBy: { fullName: "asc" },
-        });
+function extractPersonId(message: string): number | null {
+  const match = message.match(
+    /\b(?:id)\s*[:#-]?\s*(\d+)\b/i
+  );
 
-        const skillMap = new Map<number, { id: number; name: string; members: string[] }>();
-        for (const person of teamMembers) {
-          for (const personSkill of person.skills) {
-            const skill = personSkill.skill;
-            let entry = skillMap.get(skill.id);
-            if (!entry) {
-              entry = { id: skill.id, name: skill.name, members: [] };
-              skillMap.set(skill.id, entry);
-            }
-            if (!entry.members.includes(person.fullName)) entry.members.push(person.fullName);
-          }
-        }
+  if (!match) {
+    return null;
+  }
 
-        const teamSkills = Array.from(skillMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-        if (teamSkills.length === 0) {
-          return res.json({
-            success: true,
-            data: {
-              reply: teamMembers.length === 0 ? "There are currently no active team members with skills in the system." : "No skills are currently assigned to the active team members.",
-              intent: "TEAM_SKILLS_QUERY",
-              requiresConfirmation: false,
-              skills: [],
-            },
-          });
-        }
+  const id = Number(match[1]);
 
-        const rows = teamSkills.map((skill) => `| ${skill.name} | ${skill.members.length} | ${skill.members.join(", ")} |`);
-        return res.json({
-          success: true,
-          data: {
-            reply: [
-              "### 🧩 Team Skills",
-              "",
-              `I found **${teamSkills.length}** skill(s) across the active team.`,
-              "",
-              "| Skill | Team Members | Members |",
-              "| --- | ---: | --- |",
-              ...rows,
-            ].join("\n"),
-            intent: "TEAM_SKILLS_QUERY",
-            requiresConfirmation: false,
-            skills: teamSkills,
-          },
-        });
-      }
+  return Number.isInteger(id) ? id : null;
+}
 
       /* ------------------------------------------------------------------ */
       /* PERSON QUERIES                                                      */
@@ -5242,26 +5588,6 @@ app.post(
       }
 
       if (isProjectUpdateRequest(message)) {
-        const projectName = extractProjectManagementName(message);
-
-        if (!projectName) {
-          return res.json({
-            success: true,
-            data: {
-              reply: [
-                "I can update the project, but I need to know which project you mean.",
-                "",
-                "For example:",
-                "- **Change the Python project status to ACTIVE**",
-                "- **Set the due date of Python to September 15, 2026**",
-                "- **Set Ali as manager of Python**",
-              ].join("\n"),
-              intent: "UPDATE_PROJECT",
-              requiresConfirmation: false,
-            },
-          });
-        }
-
         const action = await prepareProjectUpdate(message);
 
         const project = await getProjectForManagement(
@@ -5495,9 +5821,9 @@ app.post(
         )
       ) {
         const projectName =
-          isProjectTaskQueryRequest(message)
-            ? extractProjectTaskQueryName(message)
-            : extractProjectQueryName(message);
+          extractProjectQueryName(
+            message
+          );
 
         if (!projectName) {
           const allProjects =
@@ -5775,15 +6101,21 @@ app.post(
             message
           );
 
-        pendingTaskUpdateActions.set(
+        setPendingTaskUpdate(
           conversationKey,
           taskUpdate
         );
 
-        lastPendingTaskUpdate = {
-          conversationKey,
-          action: taskUpdate,
-        };
+        console.log(
+          "TASK UPDATE PENDING:",
+          JSON.stringify({
+            conversationKey,
+            taskId: taskUpdate.taskId,
+            field: taskUpdate.field,
+            value: taskUpdate.value,
+            mapSize: pendingTaskUpdateActions.size,
+          })
+        );
 
         return res.json({
           success: true,
@@ -5798,52 +6130,6 @@ app.post(
               true,
             preview:
               taskUpdate,
-          },
-        });
-      }
-
-      /* ------------------------------------------------------------------ */
-      /* ALL TASKS QUERY                                                    */
-      /* ------------------------------------------------------------------ */
-
-      if (isAllTasksQueryRequest(message)) {
-        const allTasks = await prisma.task.findMany({
-          include: {
-            project: true,
-            department: true,
-            skills: { include: { skill: true } },
-            assignees: { include: { person: true } },
-          },
-          orderBy: { createdAt: "desc" },
-        });
-
-        if (allTasks.length === 0) {
-          return res.json({
-            success: true,
-            data: { reply: "There are currently no tasks in the system.", intent: "TASK_LIST_QUERY", requiresConfirmation: false, tasks: [] },
-          });
-        }
-
-        const rows = allTasks.map((task) => {
-          const assignees = task.assignees.length ? task.assignees.map((a) => a.person.fullName).join(", ") : "Unassigned";
-          return `| ${task.id} | ${task.title} | ${task.status} | ${task.priority} | ${task.project?.name || "No project"} | ${assignees} |`;
-        });
-
-        return res.json({
-          success: true,
-          data: {
-            reply: [
-              "### 📋 All Tasks",
-              "",
-              `I found **${allTasks.length}** task(s).`,
-              "",
-              "| ID | Task | Status | Priority | Project | Assignee |",
-              "| ---: | --- | --- | --- | --- | --- |",
-              ...rows,
-            ].join("\n"),
-            intent: "TASK_LIST_QUERY",
-            requiresConfirmation: false,
-            tasks: allTasks,
           },
         });
       }
@@ -6079,23 +6365,38 @@ app.post(
       /* ------------------------------------------------------------------ */
 
       if (
-        pendingTask &&
-        pendingTask.intent ===
+        effectivePendingTaskCreation &&
+        effectivePendingTaskCreation.intent ===
           "CREATE_TASK" &&
         isConfirmation(message)
       ) {
+        const confirmedTaskCreation =
+          effectivePendingTaskCreation;
+
+        console.log(
+          "TASK CREATION CONFIRMATION MATCHED:",
+          JSON.stringify({
+            conversationKey,
+            source: pendingTask
+              ? "conversation"
+              : taskCreationKey
+                ? "fallback-map"
+                : "last-pending",
+            title: confirmedTaskCreation.data.title,
+          })
+        );
+
         const createdTask =
           await createTaskFromPendingAction(
-            pendingTask.data
+            confirmedTaskCreation.data
           );
 
         pendingTaskActions.delete(
-          conversationKey
+          taskCreationKey ||
+            lastPendingTaskCreation?.conversationKey ||
+            conversationKey
         );
-
-        pendingTaskTitleRequests.delete(
-          conversationKey
-        );
+        lastPendingTaskCreation = null;
 
         const createdSkillNames =
           createdTask.skills.map(
@@ -6122,6 +6423,18 @@ app.post(
               } |`,
               `| Priority | ${createdTask.priority} |`,
               `| Status | ${createdTask.status} |`,
+              `| Due Date | ${
+                createdTask.dueDate
+                  ? new Date(createdTask.dueDate).toLocaleDateString(
+                      "en-US",
+                      {
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                      }
+                    )
+                  : "Not specified"
+              } |`,
               `| Required Skills | ${
                 createdSkillNames.length
                   ? createdSkillNames.join(
@@ -6143,70 +6456,6 @@ app.post(
       }
 
       /* ------------------------------------------------------------------ */
-      /* CONTINUE TASK TITLE REQUEST                                        */
-      /* ------------------------------------------------------------------ */
-
-      if (
-        pendingTaskTitleRequests.has(conversationKey) &&
-        !isConfirmation(message) &&
-        !isCancellation(message)
-      ) {
-        const suppliedTitle = message
-          .trim()
-          .replace(/^["']|["']$/g, "")
-          .replace(/[.!?]+$/, "")
-          .trim();
-
-        if (suppliedTitle) {
-          const syntheticCreateMessage =
-            `Create a task called ${suppliedTitle}`;
-
-          const taskData =
-            await prepareTaskCreation(
-              syntheticCreateMessage
-            );
-
-          pendingTaskActions.set(
-            conversationKey,
-            {
-              intent: "CREATE_TASK",
-              data: taskData,
-            }
-          );
-
-          pendingTaskTitleRequests.delete(
-            conversationKey
-          );
-
-          return res.json({
-            success: true,
-            data: {
-              reply: [
-                `I can create the **${taskData.title}** task.`,
-                "",
-                "### Task Preview",
-                "",
-                "| Field | Value |",
-                "| --- | --- |",
-                `| Title | ${taskData.title} |`,
-                `| Project | ${taskData.projectName || "Not specified"} |`,
-                `| Department | ${taskData.departmentName || "Not specified"} |`,
-                `| Priority | ${taskData.priority} |`,
-                `| Status | ${taskData.status} |`,
-                `| Required Skills | ${taskData.skillNames.length ? taskData.skillNames.join(", ") : "None"} |`,
-                `| Missing Skills | ${taskData.missingSkillNames.length ? taskData.missingSkillNames.join(", ") : "None"} |`,
-                "",
-                "Would you like me to create this task?",
-              ].join("\n"),
-              intent: "CREATE_TASK",
-              requiresConfirmation: true,
-              preview: taskData,
-            },
-          });
-        }
-      }
-
-      /* ------------------------------------------------------------------ */
       /* START TASK CREATION                                                */
       /* ------------------------------------------------------------------ */
 
@@ -6215,43 +6464,34 @@ app.post(
           message
         )
       ) {
-        const taskTitle = extractTaskTitle(message);
-
-        if (!taskTitle) {
-          pendingTaskTitleRequests.set(
-            conversationKey,
-            true
-          );
-
-          return res.json({
-            success: true,
-            data: {
-              reply: [
-                "Sure — I can create the task.",
-                "",
-                "What should I call the task?",
-                "",
-                "For example: **Create a task called Build the login page**",
-              ].join("\n"),
-              intent: "CREATE_TASK",
-              requiresConfirmation: false,
-            },
-          });
-        }
-
         const taskData =
           await prepareTaskCreation(
             message
           );
 
+        const pendingTaskCreation: PendingTaskAction = {
+          intent:
+            "CREATE_TASK",
+          data:
+            taskData,
+        };
+
         pendingTaskActions.set(
           conversationKey,
-          {
-            intent:
-              "CREATE_TASK",
-            data:
-              taskData,
-          }
+          pendingTaskCreation
+        );
+        lastPendingTaskCreation = {
+          conversationKey,
+          action: pendingTaskCreation,
+        };
+
+        console.log(
+          "TASK CREATION PENDING:",
+          JSON.stringify({
+            conversationKey,
+            title: taskData.title,
+            mapSize: pendingTaskActions.size,
+          })
         );
 
         const skillText =
@@ -6286,6 +6526,18 @@ app.post(
           } |`,
           `| Priority | ${taskData.priority} |`,
           `| Status | ${taskData.status} |`,
+          `| Due Date | ${
+            taskData.dueDate
+              ? new Date(taskData.dueDate).toLocaleDateString(
+                  "en-US",
+                  {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                  }
+                )
+              : "Not specified"
+          } |`,
           `| Required skills already available | ${skillText} |`,
           `| Missing skills | ${missingSkillText} |`,
           "",
@@ -6374,7 +6626,38 @@ app.post(
                   .join(", ")
               : "Unassigned";
 
-          pendingTaskUpdateActions.set(
+          // Assignment recommendation payloads can expose the selected
+          // person's identifier as `personId`, `id`, or a nested person.id
+          // depending on the assignment service response. Resolve the ID
+          // defensively before storing the confirmation action.
+          const recommendedPersonId =
+            Number(
+              best.personId ??
+              best.id ??
+              best.person?.id ??
+              best.userId
+            ) || undefined;
+
+          let resolvedPersonId =
+            recommendedPersonId;
+
+          if (!resolvedPersonId && best.name) {
+            const recommendedPerson =
+              await findPersonByName(
+                String(best.name)
+              );
+
+            resolvedPersonId =
+              recommendedPerson?.id;
+          }
+
+          if (!resolvedPersonId) {
+            throw new Error(
+              `I recommended ${best.name || "a team member"}, but I could not resolve that team member's database ID. Please try the assignment again.`
+            );
+          }
+
+          setPendingTaskUpdate(
             conversationKey,
             {
               intent:
@@ -6383,13 +6666,13 @@ app.post(
               field:
                 "assignee",
               value:
-                best.id,
+                resolvedPersonId,
               displayValue:
                 best.name,
               oldValue:
                 currentAssignee,
               personId:
-                best.id,
+                resolvedPersonId,
               personName:
                 best.name,
             }
@@ -6883,6 +7166,227 @@ ${message}
 );
 
 /* -------------------------------------------------------------------------- */
+/* TASK PROCESSOR / SCHEDULER                                                */
+/* -------------------------------------------------------------------------- */
+
+type TaskProcessorItem = {
+  id: number;
+  title: string;
+  status: TaskStatus;
+  priority: Priority;
+  dueDate: string | null;
+  daysUntilDue: number | null;
+  overdue: boolean;
+  dueSoon: boolean;
+  unassigned: boolean;
+  assignees: string[];
+  project: string | null;
+  department: string | null;
+};
+
+type TaskProcessorReport = {
+  generatedAt: string;
+  summary: {
+    activeTasks: number;
+    overdueTasks: number;
+    dueSoonTasks: number;
+    unassignedTasks: number;
+    highPriorityOpenTasks: number;
+  };
+  tasks: TaskProcessorItem[];
+};
+
+let lastTaskProcessorReport: TaskProcessorReport | null = null;
+let taskProcessorTimer: ReturnType<typeof setInterval> | null = null;
+
+async function runTaskProcessor(): Promise<TaskProcessorReport> {
+  const now = new Date();
+  const dueSoonLimit = new Date(now);
+  dueSoonLimit.setDate(dueSoonLimit.getDate() + 3);
+
+  const tasks = await prisma.task.findMany({
+    where: {
+      status: {
+        not: "COMPLETED",
+      },
+    },
+    include: {
+      project: true,
+      department: true,
+      assignees: {
+        include: {
+          person: true,
+        },
+      },
+    },
+    orderBy: [
+      {
+        dueDate: "asc",
+      },
+      {
+        priority: "desc",
+      },
+      {
+        id: "asc",
+      },
+    ],
+  });
+
+  const items: TaskProcessorItem[] = tasks.map((task) => {
+    const dueDate = task.dueDate
+      ? new Date(task.dueDate)
+      : null;
+
+    const overdue = Boolean(
+      dueDate && dueDate.getTime() < now.getTime()
+    );
+
+    const dueSoon = Boolean(
+      dueDate &&
+      !overdue &&
+      dueDate.getTime() <= dueSoonLimit.getTime()
+    );
+
+    const daysUntilDue = dueDate
+      ? Math.ceil(
+          (dueDate.getTime() - now.getTime()) /
+            (1000 * 60 * 60 * 24)
+        )
+      : null;
+
+    return {
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      dueDate: dueDate ? dueDate.toISOString() : null,
+      daysUntilDue,
+      overdue,
+      dueSoon,
+      unassigned: task.assignees.length === 0,
+      assignees: task.assignees.map(
+        (assignment) => assignment.person.fullName
+      ),
+      project: task.project?.name || null,
+      department: task.department?.name || null,
+    };
+  });
+
+  const report: TaskProcessorReport = {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      activeTasks: items.length,
+      overdueTasks: items.filter((task) => task.overdue).length,
+      dueSoonTasks: items.filter((task) => task.dueSoon).length,
+      unassignedTasks: items.filter((task) => task.unassigned).length,
+      highPriorityOpenTasks: items.filter(
+        (task) => task.priority === "HIGH" || task.priority === "URGENT"
+      ).length,
+    },
+    tasks: items,
+  };
+
+  lastTaskProcessorReport = report;
+
+  console.log(
+    "TASK PROCESSOR REPORT:",
+    JSON.stringify(report.summary)
+  );
+
+  return report;
+}
+
+app.get(
+  "/api/task-processor/status",
+  async (_req: Request, res: Response) => {
+    try {
+      const report =
+        lastTaskProcessorReport ||
+        (await runTaskProcessor());
+
+      res.json({
+        success: true,
+        data: report,
+      });
+    } catch (error) {
+      console.error(
+        "Task processor status failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to process tasks.",
+      });
+    }
+  }
+);
+
+app.post(
+  "/api/task-processor/run",
+  async (_req: Request, res: Response) => {
+    try {
+      const report = await runTaskProcessor();
+
+      res.json({
+        success: true,
+        data: report,
+      });
+    } catch (error) {
+      console.error(
+        "Task processor run failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to process tasks.",
+      });
+    }
+  }
+);
+
+function startTaskProcessor() {
+  if (taskProcessorTimer) {
+    return;
+  }
+
+  const intervalMs = Math.max(
+    60_000,
+    Number(
+      process.env.TASK_PROCESSOR_INTERVAL_MS ||
+        300_000
+    )
+  );
+
+  void runTaskProcessor().catch((error) => {
+    console.error(
+      "Initial task processor run failed:",
+      error
+    );
+  });
+
+  taskProcessorTimer = setInterval(() => {
+    void runTaskProcessor().catch((error) => {
+      console.error(
+        "Scheduled task processor run failed:",
+        error
+      );
+    });
+  }, intervalMs);
+
+  console.log(
+    `Task processor started (interval: ${intervalMs}ms)`
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* 404 HANDLER                                                                */
 /* -------------------------------------------------------------------------- */
 
@@ -6933,4 +7437,6 @@ app.listen(PORT, () => {
   console.log(
     `Backend server running on http://localhost:${PORT}`
   );
+
+  startTaskProcessor();
 });
