@@ -7741,14 +7741,13 @@ app.use(
 /* START SERVER / VERCEL EXPORT                                               */
 /* -------------------------------------------------------------------------- */
 
-export default app;
-
-if (!process.env.VERCEL) {
+if (process.env.NODE_ENV !== "production") {
   app.listen(PORT, () => {
     console.log(
       `Backend server running on http://localhost:${PORT}`
     );
-
     startTaskProcessor();
   });
 }
+
+export default app;
