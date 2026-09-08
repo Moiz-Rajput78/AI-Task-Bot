@@ -23,9 +23,9 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000";
-
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
+).replace(/\/+$/, "");
 const TASKS_URL = `${API_URL}/api/tasks`;
 const AI_URL =
   process.env.NEXT_PUBLIC_AI_URL ?? `${API_URL}/api/ai/chat`;
