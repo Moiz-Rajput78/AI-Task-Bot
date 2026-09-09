@@ -543,7 +543,7 @@ let lastPendingTaskCreation: {
 } | null = null;
 
 // Keep the most recent person-update confirmation outside the
-// conversation map for clients that change conversation identifiers.
+// conversation map for the same reason as task updates.
 let lastPendingPersonUpdate: {
   conversationKey: string;
   action: PendingPersonUpdateAction;
@@ -622,16 +622,16 @@ function setPendingPersonUpdate(
 function deletePendingPersonUpdate(
   conversationKey: string
 ): void {
-  pendingPersonUpdateActions.delete(
-    conversationKey
-  );
+ pendingPersonUpdateActions.delete(
+  conversationKey
+);
 
-  if (
-    lastPendingPersonUpdate?.conversationKey ===
-    conversationKey
-  ) {
-    lastPendingPersonUpdate = null;
-  }
+if (
+  lastPendingPersonUpdate?.conversationKey ===
+  conversationKey
+) {
+  lastPendingPersonUpdate = null;
+}
 }
 
 
@@ -1260,25 +1260,24 @@ function extractPersonSkillName(
 function extractPersonUpdateName(
   message: string
 ): string | null {
-  const patterns = [
+ const patterns = [
   /\badd\s+.+?\s+to\s+(.+?)['’]?s?\s+skills(?:\?|$)/i,
   /\bremove\s+.+?\s+from\s+(.+?)['’]?s?\s+skills(?:\?|$)/i,
   /\bchange\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
   /\bset\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
   /\bupdate\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
 
-  /\bmark\s+(.+?)\s+as\s+(?:available|unavailable|busy|on leave|partially available)(?:\?|$)/i,
+  /\bmark\s+(.+?)\s+as\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)(?:\?|$)/i,
 
-  /\bmake\s+(.+?)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)(?:\?|$)/i,
+  /\bmake\s+(.+?)\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)(?:\?|$)/i,
 
-  /\b(?:change|update|set)\s+(.+?)\s+(?:status|state)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)(?:\?|$)/i,
+  /\b(?:change|update|set)\s+(.+?)\s+(?:status|state)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)(?:\?|$)/i,
 
-  /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+(.+?)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)(?:\?|$)/i,
+  /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+(.+?)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)(?:\?|$)/i,
 
   /\bdeactivate\s+(.+?)(?:\?|$)/i,
   /\bactivate\s+(.+?)(?:\?|$)/i,
 ];
-
   for (const pattern of patterns) {
     const match = message.match(pattern);
 
@@ -1309,25 +1308,24 @@ function isPersonUpdateRequest(message: string): boolean {
     return false;
   }
 
-  const updatePatterns = [
+ const updatePatterns = [
   /\badd\s+.+?\s+to\s+.+?['’]?s?\s+skills\b/i,
   /\bremove\s+.+?\s+from\s+.+?['’]?s?\s+skills\b/i,
   /\bchange\s+.+?['’]?s?\s+department\s+to\b/i,
   /\bset\s+.+?['’]?s?\s+department\s+to\b/i,
   /\bupdate\s+.+?['’]?s?\s+department\s+to\b/i,
 
-  /\bmark\s+.+?\s+as\s+(?:available|unavailable|busy|on leave|partially available)\b/i,
+  /\bmark\s+.+?\s+as\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)\b/i,
 
-  /\bmake\s+.+?\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)\b/i,
+  /\bmake\s+.+?\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)\b/i,
 
-  /\b(?:change|update|set)\s+.+?\s+(?:status|state)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)\b/i,
+  /\b(?:change|update|set)\s+.+?\s+(?:status|state)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)\b/i,
 
-  /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+.+?\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)\b/i,
+  /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+.+?\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|active|inactive)\b/i,
 
   /\bdeactivate\s+.+/i,
   /\bactivate\s+.+/i,
 ];
-
   return updatePatterns.some((pattern) =>
     pattern.test(text)
   );
@@ -1722,48 +1720,11 @@ if (statusMatch?.[2]) {
     }
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* ACTIVE / INACTIVE                                                       */
-  /* ---------------------------------------------------------------------- */
-
- if (
-  /\bdeactivate\s+/i.test(text) ||
-  /\bmake\s+.+?\s+(?:as\s+)?inactive\b/i.test(text)
-){
-    return {
-      intent: "UPDATE_PERSON",
-      personId: person.id,
-      personName: person.fullName,
-      field: "active",
-      value: false,
-      displayValue: "Inactive",
-      oldValue: person.isActive
-        ? "Active"
-        : "Inactive",
-    };
-  }
-
- if (
-  /\bactivate\s+/i.test(text) ||
-  /\bmake\s+.+?\s+(?:as\s+)?active\b/i.test(text)
-) {
-    return {
-      intent: "UPDATE_PERSON",
-      personId: person.id,
-      personName: person.fullName,
-      field: "active",
-      value: true,
-      displayValue: "Active",
-      oldValue: person.isActive
-        ? "Active"
-        : "Inactive",
-    };
-  }
-
   throw new Error(
-    "I couldn't determine which team member field you want to update."
+    "Please specify a valid person update."
   );
 }
+
 
 /* -------------------------------------------------------------------------- */
 /* APPLY PERSON UPDATE                                                        */
@@ -1888,6 +1849,33 @@ async function applyPersonUpdate(
         },
       });
   }
+
+
+  /* ---------------------------------------------------------------------- */
+  /* ACTIVE / INACTIVE                                                       */
+  /* ---------------------------------------------------------------------- */
+
+  else if (action.field === "active") {
+    updatedPerson =
+      await prisma.person.update({
+        where: {
+          id: action.personId,
+        },
+        data: {
+          isActive: Boolean(action.value),
+        },
+        include: {
+          department: true,
+          skills: {
+            include: {
+              skill: true,
+            },
+          },
+        },
+      });
+  }
+
+
 
   /* ---------------------------------------------------------------------- */
   /* AVAILABILITY                                                           */
@@ -4761,12 +4749,16 @@ lastPendingBulkTaskUpdate =
             confirmedPersonUpdate
           );
 
-        pendingPersonUpdateActions.delete(
-          personUpdateKey || conversationKey
-        );
+      pendingPersonUpdateActions.delete(
+  personUpdateKey ||
+    lastPendingPersonUpdate?.conversationKey ||
+    conversationKey
+);
+
+lastPendingPersonUpdate = null;
 
         let successMessage =
-          `✅ **${updatedPerson?.fullName || confirmedPersonUpdate.personName}** has been updated successfully.`;
+          `✅ **${confirmedPersonUpdate.personName}** has been updated successfully.`;
 
         if (
           confirmedPersonUpdate.field ===
@@ -5451,37 +5443,37 @@ if (
         });
       }
 
-      if (
-        isPersonUpdateRequest(
-          message
-        )
-      ) {
-        const personUpdate =
-          await preparePersonUpdate(
-            message
-          );
+     if (
+  isPersonUpdateRequest(
+    message
+  )
+) {
+  const personUpdate =
+    await preparePersonUpdate(
+      message
+    );
 
-       setPendingPersonUpdate(
-  conversationKey,
-  personUpdate
-);
+  setPendingPersonUpdate(
+    conversationKey,
+    personUpdate
+  );
 
-        return res.json({
-          success: true,
-          data: {
-            reply:
-              formatPersonUpdatePreview(
-                personUpdate
-              ),
-            intent:
-              "UPDATE_PERSON",
-            requiresConfirmation:
-              true,
-            preview:
-              personUpdate,
-          },
-        });
-      }
+  return res.json({
+    success: true,
+    data: {
+      reply:
+        formatPersonUpdatePreview(
+          personUpdate
+        ),
+      intent:
+        "UPDATE_PERSON",
+      requiresConfirmation:
+        true,
+      preview:
+        personUpdate,
+    },
+  });
+}
       function isPersonDeletionRequest(message: string): boolean {
   const text = normalizeText(message);
 
@@ -8314,5 +8306,6 @@ if (process.env.NODE_ENV !== "production") {
     startTaskProcessor();
   });
 }
+
 
 export default app;
