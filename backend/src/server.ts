@@ -1849,34 +1849,6 @@ async function applyPersonUpdate(
         },
       });
   }
-
-
-  /* ---------------------------------------------------------------------- */
-  /* ACTIVE / INACTIVE                                                       */
-  /* ---------------------------------------------------------------------- */
-
-  else if (action.field === "active") {
-    updatedPerson =
-      await prisma.person.update({
-        where: {
-          id: action.personId,
-        },
-        data: {
-          isActive: Boolean(action.value),
-        },
-        include: {
-          department: true,
-          skills: {
-            include: {
-              skill: true,
-            },
-          },
-        },
-      });
-  }
-
-
-
   /* ---------------------------------------------------------------------- */
   /* AVAILABILITY                                                           */
   /* ---------------------------------------------------------------------- */
