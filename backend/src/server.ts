@@ -1376,7 +1376,10 @@ async function preparePersonUpdate(
     );
   }
 
-  const person = await findPersonByName(personName);
+  const person = await findPersonByName(
+  personName,
+  true
+);
 
   if (!person) {
     throw new Error(
