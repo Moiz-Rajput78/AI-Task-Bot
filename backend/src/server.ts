@@ -378,6 +378,21 @@ type PendingProjectAction = {
 };
 
 /* -------------------------------------------------------------------------- */
+/* PENDING SKILL / DEPARTMENT CREATION                                       */
+/* -------------------------------------------------------------------------- */
+
+type PendingCatalogCreationAction =
+  | {
+      intent: "CREATE_SKILL";
+      name: string;
+    }
+  | {
+      intent: "CREATE_DEPARTMENT";
+      name: string;
+    };
+
+
+/* -------------------------------------------------------------------------- */
 /* PENDING TASK UPDATE                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -468,6 +483,17 @@ const pendingProjectActions = new Map<
   string,
   PendingProjectAction
 >();
+
+const pendingCatalogCreationActions = new Map<
+  string,
+  PendingCatalogCreationAction
+>();
+
+let lastPendingCatalogCreation: {
+  conversationKey: string;
+  action: PendingCatalogCreationAction;
+} | null = null;
+
 
 type ProjectUpdateField =
   | "status"
@@ -1329,6 +1355,73 @@ function isPersonUpdateRequest(message: string): boolean {
   return updatePatterns.some((pattern) =>
     pattern.test(text)
   );
+}
+
+function isSkillCreationRequest(message: string): boolean {
+  const text = message.trim();
+
+  return (
+    /\b(?:add|create)\s+(?:a\s+)?skill(?:\s+named|\s+called)?\s+.+/i.test(
+      text
+    ) ||
+    /\b(?:add|create)\s+.+?\s+as\s+(?:a\s+)?skill\b/i.test(
+      text
+    )
+  );
+}
+
+function isDepartmentCreationRequest(message: string): boolean {
+  const text = message.trim();
+
+  return (
+    /\b(?:add|create)\s+(?:a\s+)?department(?:\s+named|\s+called)?\s+.+/i.test(
+      text
+    ) ||
+    /\b(?:add|create)\s+.+?\s+as\s+(?:a\s+)?department\b/i.test(
+      text
+    )
+  );
+}
+
+
+function extractSkillCreationName(message: string): string | null {
+  const text = message.trim();
+
+  const patterns = [
+    /\b(?:add|create)\s+(?:a\s+)?skill(?:\s+named|\s+called)?\s+(.+?)(?:\?|$)/i,
+    /\b(?:add|create)\s+(.+?)\s+as\s+(?:a\s+)?skill(?:\?|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+function extractDepartmentCreationName(
+  message: string
+): string | null {
+  const text = message.trim();
+
+  const patterns = [
+    /\b(?:add|create)\s+(?:a\s+)?department(?:\s+named|\s+called)?\s+(.+?)(?:\?|$)/i,
+    /\b(?:add|create)\s+(.+?)\s+as\s+(?:a\s+)?department(?:\?|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -4011,6 +4104,124 @@ async function prepareTaskUpdate(
   );
 }
 
+
+async function prepareCatalogCreation(
+  message: string
+): Promise<PendingCatalogCreationAction> {
+  const text = message.trim();
+
+  if (isSkillCreationRequest(text)) {
+    const name = extractSkillCreationName(text);
+
+    if (!name) {
+      throw new Error(
+        "Please specify the skill name you want to create."
+      );
+    }
+
+    const existingSkill = await prisma.skill.findFirst({
+      where: {
+        name: {
+          equals: name,
+          mode: "insensitive",
+        },
+      },
+    });
+
+    if (existingSkill) {
+      throw new Error(
+        `A skill named "${existingSkill.name}" already exists.`
+      );
+    }
+
+    return {
+      intent: "CREATE_SKILL",
+      name,
+    };
+  }
+
+  if (isDepartmentCreationRequest(text)) {
+    const name = extractDepartmentCreationName(text);
+
+    if (!name) {
+      throw new Error(
+        "Please specify the department name you want to create."
+      );
+    }
+
+    const existingDepartment =
+      await prisma.department.findFirst({
+        where: {
+          name: {
+            equals: name,
+            mode: "insensitive",
+          },
+        },
+      });
+
+    if (existingDepartment) {
+      throw new Error(
+        `A department named "${existingDepartment.name}" already exists.`
+      );
+    }
+
+    return {
+      intent: "CREATE_DEPARTMENT",
+      name,
+    };
+  }
+
+  throw new Error(
+    "Please specify whether you want to create a skill or department."
+  );
+}
+
+
+async function applyCatalogCreation(
+  action: PendingCatalogCreationAction
+) {
+  if (action.intent === "CREATE_SKILL") {
+    const skill = await prisma.skill.create({
+      data: {
+        name: action.name.trim(),
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        action: "SKILL_CREATED",
+        entity: "Skill",
+        details: `Skill "${skill.name}" was created through the AI Task Bot`,
+        isAI: true,
+        aiReason:
+          "The skill was created through an AI-confirmed request.",
+      },
+    });
+
+    return skill;
+  }
+
+  const department = await prisma.department.create({
+    data: {
+      name: action.name.trim(),
+    },
+  });
+
+  await prisma.activityLog.create({
+    data: {
+      action: "DEPARTMENT_CREATED",
+      entity: "Department",
+      details: `Department "${department.name}" was created through the AI Task Bot`,
+      isAI: true,
+      aiReason:
+        "The department was created through an AI-confirmed request.",
+    },
+  });
+
+  return department;
+}
+
+
 /* -------------------------------------------------------------------------- */
 /* APPLY TASK UPDATE                                                          */
 /* -------------------------------------------------------------------------- */
@@ -4546,6 +4757,30 @@ app.post(
           conversationKey
         );
 
+      const pendingCatalogCreation =
+  pendingCatalogCreationActions.get(
+    conversationKey
+  );
+
+const catalogCreationKey =
+  pendingCatalogCreation
+    ? conversationKey
+    : getPendingActionKey(
+        pendingCatalogCreationActions,
+        conversationKey
+      );
+
+const effectivePendingCatalogCreation =
+  pendingCatalogCreation ||
+  (catalogCreationKey
+    ? pendingCatalogCreationActions.get(
+        catalogCreationKey
+      )
+    : undefined) ||
+  (isConfirmation(message)
+    ? lastPendingCatalogCreation?.action
+    : undefined);
+
       // Confirmation messages can arrive from a session created before the
       // frontend started sending conversationId. Reconcile that safely by
       // using the only pending action when the requested key has none.
@@ -4691,6 +4926,15 @@ lastPendingPersonUpdate = null;
   conversationKey
 );
 
+pendingCatalogCreationActions.delete(
+  conversationKey
+);
+
+lastPendingCatalogCreation = null;
+
+
+
+
 lastPendingBulkTaskUpdate =
   null;
 
@@ -4790,6 +5034,51 @@ lastPendingPersonUpdate = null;
         });
       }
 
+
+
+      if (
+  effectivePendingCatalogCreation &&
+  isConfirmation(message)
+) {
+  const confirmedCatalogCreation =
+    effectivePendingCatalogCreation;
+
+  const createdCatalogItem =
+    await applyCatalogCreation(
+      confirmedCatalogCreation
+    );
+
+  pendingCatalogCreationActions.delete(
+    catalogCreationKey ||
+      lastPendingCatalogCreation?.conversationKey ||
+      conversationKey
+  );
+
+  lastPendingCatalogCreation = null;
+
+  if (
+    confirmedCatalogCreation.intent ===
+    "CREATE_SKILL"
+  ) {
+    return res.json({
+      success: true,
+      data: {
+        reply: `✅ Skill "${createdCatalogItem.name}" has been created successfully.`,
+        intent: "CREATE_SKILL",
+        created: createdCatalogItem,
+      },
+    });
+  }
+
+  return res.json({
+    success: true,
+    data: {
+      reply: `✅ Department "${createdCatalogItem.name}" has been created successfully.`,
+      intent: "CREATE_DEPARTMENT",
+      created: createdCatalogItem,
+    },
+  });
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -5417,6 +5706,68 @@ if (
           },
         });
       }
+
+
+      if (
+  isSkillCreationRequest(message) ||
+  isDepartmentCreationRequest(message)
+) {
+  const catalogCreation =
+    await prepareCatalogCreation(message);
+
+  pendingCatalogCreationActions.set(
+    conversationKey,
+    catalogCreation
+  );
+
+  lastPendingCatalogCreation = {
+    conversationKey,
+    action: catalogCreation,
+  };
+
+  if (
+    catalogCreation.intent ===
+    "CREATE_SKILL"
+  ) {
+    return res.json({
+      success: true,
+      data: {
+        reply: [
+          "✨ **Create Skill**",
+          "",
+          `I can create the skill **${catalogCreation.name}**.`,
+          "",
+          "This is a preview only — **no changes have been made yet**.",
+          "",
+          "Would you like me to create this skill?",
+        ].join("\n"),
+        intent: "CREATE_SKILL",
+        requiresConfirmation: true,
+        preview: catalogCreation,
+      },
+    });
+  }
+
+  return res.json({
+    success: true,
+    data: {
+      reply: [
+        "✨ **Create Department**",
+        "",
+        `I can create the department **${catalogCreation.name}**.`,
+        "",
+        "This is a preview only — **no changes have been made yet**.",
+        "",
+        "Would you like me to create this department?",
+      ].join("\n"),
+      intent: "CREATE_DEPARTMENT",
+      requiresConfirmation: true,
+      preview: catalogCreation,
+    },
+  });
+}
+
+
 
      if (
   isPersonUpdateRequest(
