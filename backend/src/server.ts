@@ -391,6 +391,29 @@ type PendingCatalogCreationAction =
       name: string;
     };
 
+type PendingCatalogDeletionAction =
+  | {
+      intent: "DELETE_SKILL";
+      skillId: number;
+      skillName: string;
+    }
+  | {
+      intent: "DELETE_DEPARTMENT";
+      departmentId: number;
+      departmentName: string;
+    }
+  | {
+      intent: "REMOVE_PERSON_SKILL";
+      skillId: number;
+      skillName: string;
+    };
+
+type PendingSkillDeletionChoice = {
+  intent: "CHOOSE_SKILL_DELETION_ACTION";
+  skillId: number;
+  skillName: string;
+};
+
 
 /* -------------------------------------------------------------------------- */
 /* PENDING TASK UPDATE                                                        */
@@ -493,6 +516,31 @@ let lastPendingCatalogCreation: {
   conversationKey: string;
   action: PendingCatalogCreationAction;
 } | null = null;
+
+
+
+const pendingCatalogDeletionActions = new Map<
+  string,
+  PendingCatalogDeletionAction
+>();
+
+let lastPendingCatalogDeletion: {
+  conversationKey: string;
+  action: PendingCatalogDeletionAction;
+} | null = null;
+
+const pendingSkillDeletionChoices = new Map<
+  string,
+  PendingSkillDeletionChoice
+>();
+
+let lastPendingSkillDeletionChoice: {
+  conversationKey: string;
+  action: PendingSkillDeletionChoice;
+} | null = null;
+
+
+
 
 
 type ProjectUpdateField =
@@ -1382,6 +1430,87 @@ function isDepartmentCreationRequest(message: string): boolean {
     )
   );
 }
+
+
+
+
+function isSkillDeletionRequest(message: string): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (
+    /\b(?:delete|remove|drop)\b/.test(text) &&
+    /\bskill\b/.test(text)
+  );
+}
+
+function isDepartmentDeletionRequest(
+  message: string
+): boolean {
+  const text = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (
+    /\b(?:delete|remove|drop)\b/.test(text) &&
+    /\bdepartment\b/.test(text)
+  );
+}
+
+function extractSkillDeletionName(
+  message: string
+): string | null {
+  const text = message.trim();
+
+  const patterns = [
+    /\b(?:delete|remove|drop)\s+(?:the\s+)?skill\s+(?:named\s+|called\s+)?(.+?)(?:\?|$)/i,
+    /\b(?:delete|remove|drop)\s+(.+?)\s+skill(?:\?|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return match[1]
+        .trim()
+        .replace(/^["']|["']$/g, "");
+    }
+  }
+
+  return null;
+}
+
+function extractDepartmentDeletionName(
+  message: string
+): string | null {
+  const text = message.trim();
+
+  const patterns = [
+    /\b(?:delete|remove|drop)\s+(?:the\s+)?department\s+(?:named\s+|called\s+)?(.+?)(?:\?|$)/i,
+    /\b(?:delete|remove|drop)\s+(.+?)\s+department(?:\?|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return match[1]
+        .trim()
+        .replace(/^["']|["']$/g, "");
+    }
+  }
+
+  return null;
+}
+
+
+
+
+
+
 
 
 function extractSkillCreationName(message: string): string | null {
@@ -4222,6 +4351,110 @@ async function applyCatalogCreation(
 }
 
 
+
+
+
+
+async function applyCatalogDeletion(
+  action: PendingCatalogDeletionAction
+) {
+  if (action.intent === "DELETE_SKILL") {
+    const existingSkill = await prisma.skill.findUnique({
+      where: {
+        id: action.skillId,
+      },
+    });
+
+    if (!existingSkill) {
+      throw new Error(
+        `Skill "${action.skillName}" no longer exists.`
+      );
+    }
+
+    await prisma.skill.delete({
+      where: {
+        id: action.skillId,
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        action: "SKILL_DELETED",
+        entity: "Skill",
+        details: `Skill "${existingSkill.name}" was deleted through the AI Task Bot`,
+        isAI: true,
+        aiReason:
+          "The skill was deleted through an AI-confirmed request.",
+      },
+    });
+
+    return existingSkill;
+  }
+
+  if (action.intent === "DELETE_DEPARTMENT") {
+    const existingDepartment =
+      await prisma.department.findUnique({
+        where: {
+          id: action.departmentId,
+        },
+        include: {
+          _count: {
+            select: {
+              people: true,
+              tasks: true,
+            },
+          },
+        },
+      });
+
+    if (!existingDepartment) {
+      throw new Error(
+        `Department "${action.departmentName}" no longer exists.`
+      );
+    }
+
+    if (
+      existingDepartment._count.people > 0 ||
+      existingDepartment._count.tasks > 0
+    ) {
+      throw new Error(
+        `Cannot delete department "${existingDepartment.name}" because it still has ${existingDepartment._count.people} people and ${existingDepartment._count.tasks} tasks.`
+      );
+    }
+
+    await prisma.department.delete({
+      where: {
+        id: action.departmentId,
+      },
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        action: "DEPARTMENT_DELETED",
+        entity: "Department",
+        details: `Department "${existingDepartment.name}" was deleted through the AI Task Bot`,
+        isAI: true,
+        aiReason:
+          "The department was deleted through an AI-confirmed request.",
+      },
+    });
+
+    return existingDepartment;
+  }
+
+  throw new Error(
+    "This catalog deletion action is not supported."
+  );
+}
+
+
+
+
+
+
+
+
+
 /* -------------------------------------------------------------------------- */
 /* APPLY TASK UPDATE                                                          */
 /* -------------------------------------------------------------------------- */
@@ -4781,6 +5014,59 @@ const effectivePendingCatalogCreation =
     ? lastPendingCatalogCreation?.action
     : undefined);
 
+
+
+
+const pendingCatalogDeletion =
+  pendingCatalogDeletionActions.get(
+    conversationKey
+  );
+
+const catalogDeletionKey =
+  pendingCatalogDeletion
+    ? conversationKey
+    : getPendingActionKey(
+        pendingCatalogDeletionActions,
+        conversationKey
+      );
+
+const effectivePendingCatalogDeletion =
+  pendingCatalogDeletion ||
+  (catalogDeletionKey
+    ? pendingCatalogDeletionActions.get(
+        catalogDeletionKey
+      )
+    : undefined) ||
+  (isConfirmation(message)
+    ? lastPendingCatalogDeletion?.action
+    : undefined);
+
+const pendingSkillDeletionChoice =
+  pendingSkillDeletionChoices.get(
+    conversationKey
+  );
+
+const skillDeletionChoiceKey =
+  pendingSkillDeletionChoice
+    ? conversationKey
+    : getPendingActionKey(
+        pendingSkillDeletionChoices,
+        conversationKey
+      );
+
+const effectivePendingSkillDeletionChoice =
+  pendingSkillDeletionChoice ||
+  (skillDeletionChoiceKey
+    ? pendingSkillDeletionChoices.get(
+        skillDeletionChoiceKey
+      )
+    : undefined) ||
+  (lastPendingSkillDeletionChoice?.action);
+
+
+
+
+
       // Confirmation messages can arrive from a session created before the
       // frontend started sending conversationId. Reconcile that safely by
       // using the only pending action when the requested key has none.
@@ -4933,6 +5219,19 @@ pendingCatalogCreationActions.delete(
 lastPendingCatalogCreation = null;
 
 
+pendingCatalogDeletionActions.delete(
+  conversationKey
+);
+
+lastPendingCatalogDeletion = null;
+
+pendingSkillDeletionChoices.delete(
+  conversationKey
+);
+
+lastPendingSkillDeletionChoice = null;
+
+
 
 
 lastPendingBulkTaskUpdate =
@@ -5033,6 +5332,170 @@ lastPendingPersonUpdate = null;
           },
         });
       }
+
+
+
+            /* ------------------------------------------------------------------ */
+      /* START SKILL DELETION CHOICE                                       */
+      /* ------------------------------------------------------------------ */
+
+      if (
+        effectivePendingSkillDeletionChoice &&
+        /^(1|2)$/.test(message.trim())
+      ) {
+        const choice = message.trim();
+
+        const selectedAction =
+          effectivePendingSkillDeletionChoice;
+
+        const pendingKey =
+          skillDeletionChoiceKey ||
+          lastPendingSkillDeletionChoice?.conversationKey ||
+          conversationKey;
+
+        pendingSkillDeletionChoices.delete(
+          pendingKey
+        );
+
+        lastPendingSkillDeletionChoice = null;
+
+        if (choice === "1") {
+          const deletionAction:
+            PendingCatalogDeletionAction = {
+            intent:
+              "DELETE_SKILL",
+            skillId:
+              selectedAction.skillId,
+            skillName:
+              selectedAction.skillName,
+          };
+
+          pendingCatalogDeletionActions.set(
+            conversationKey,
+            deletionAction
+          );
+
+          lastPendingCatalogDeletion = {
+            conversationKey,
+            action:
+              deletionAction,
+          };
+
+          return res.json({
+            success: true,
+            data: {
+              reply: [
+                "⚠️ **Delete Skill from Catalog**",
+                "",
+                `You selected **1**: delete the skill **"${selectedAction.skillName}"** from the system skill catalog.`,
+                "",
+                "This will remove the skill from the system skill catalog.",
+                "",
+                "Do you want to continue?",
+                "",
+                "Please confirm **yes / no**.",
+              ].join("\n"),
+              intent:
+                "DELETE_SKILL",
+              requiresConfirmation:
+                true,
+              preview:
+                deletionAction,
+            },
+          });
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            reply: [
+              `You selected **2**: remove the skill **"${selectedAction.skillName}"** from a specific team member.`,
+              "",
+              "Please tell me the team member's name and I will remove this skill from their profile.",
+              "",
+              `For example: **Remove ${selectedAction.skillName} from Ali's skills**`,
+            ].join("\n"),
+            intent:
+              "REMOVE_PERSON_SKILL",
+            requiresConfirmation:
+              false,
+            skillId:
+              selectedAction.skillId,
+            skillName:
+              selectedAction.skillName,
+          },
+        });
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* START CATALOG DELETION CONFIRMATION                               */
+      /* ------------------------------------------------------------------ */
+
+      if (
+        effectivePendingCatalogDeletion &&
+        isConfirmation(message)
+      ) {
+        const confirmedDeletion =
+          effectivePendingCatalogDeletion;
+
+        const deletedItem =
+          await applyCatalogDeletion(
+            confirmedDeletion
+          );
+
+        const pendingKey =
+          catalogDeletionKey ||
+          lastPendingCatalogDeletion?.conversationKey ||
+          conversationKey;
+
+        pendingCatalogDeletionActions.delete(
+          pendingKey
+        );
+
+        lastPendingCatalogDeletion = null;
+
+        if (
+          confirmedDeletion.intent ===
+          "DELETE_SKILL"
+        ) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                `✅ Skill **"${deletedItem.name}"** has been deleted successfully from the skill catalog.`,
+              intent:
+                "DELETE_SKILL",
+              requiresConfirmation:
+                false,
+              deleted:
+                deletedItem,
+            },
+          });
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            reply:
+              `✅ Department **"${deletedItem.name}"** has been deleted successfully.`,
+            intent:
+              "DELETE_DEPARTMENT",
+            requiresConfirmation:
+              false,
+            deleted:
+              deletedItem,
+          },
+        });
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* START CATALOG CREATION CONFIRMATION                               */
+      /* ------------------------------------------------------------------ */
+
+
+
+
+
 
 
 
@@ -5613,7 +6076,7 @@ if (
       /* START PERSON UPDATE                                                */
       /* ------------------------------------------------------------------ */
 
-            /* ------------------------------------------------------------------ */
+      /* ------------------------------------------------------------------ */
       /* START PERSON DELETION                                              */
       /* ------------------------------------------------------------------ */
 
@@ -5708,98 +6171,295 @@ if (
       }
 
 
+      /* ------------------------------------------------------------------ */
+      /* START SKILL DELETION                                               */
+      /* ------------------------------------------------------------------ */
+
       if (
-  isSkillCreationRequest(message) ||
-  isDepartmentCreationRequest(message)
-) {
-  const catalogCreation =
-    await prepareCatalogCreation(message);
+        isSkillDeletionRequest(
+          message
+        )
+      ) {
+        const skillName =
+          extractSkillDeletionName(
+            message
+          );
 
-  pendingCatalogCreationActions.set(
-    conversationKey,
-    catalogCreation
-  );
+        if (!skillName) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                "Please provide the name of the skill you want to remove.",
+              intent:
+                "DELETE_SKILL",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
 
-  lastPendingCatalogCreation = {
-    conversationKey,
-    action: catalogCreation,
-  };
+        const skill =
+          await findSkillByName(
+            skillName
+          );
 
-  if (
-    catalogCreation.intent ===
-    "CREATE_SKILL"
-  ) {
-    return res.json({
-      success: true,
-      data: {
-        reply: [
-          "✨ **Create Skill**",
-          "",
-          `I can create the skill **${catalogCreation.name}**.`,
-          "",
-          "This is a preview only — **no changes have been made yet**.",
-          "",
-          "Would you like me to create this skill?",
-        ].join("\n"),
-        intent: "CREATE_SKILL",
-        requiresConfirmation: true,
-        preview: catalogCreation,
-      },
-    });
-  }
+        if (!skill) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                `I couldn't find a skill named **${skillName}** in the skill catalog.`,
+              intent:
+                "DELETE_SKILL",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
 
-  return res.json({
-    success: true,
-    data: {
-      reply: [
-        "✨ **Create Department**",
-        "",
-        `I can create the department **${catalogCreation.name}**.`,
-        "",
-        "This is a preview only — **no changes have been made yet**.",
-        "",
-        "Would you like me to create this department?",
-      ].join("\n"),
-      intent: "CREATE_DEPARTMENT",
-      requiresConfirmation: true,
-      preview: catalogCreation,
-    },
-  });
-}
+        const choiceAction:
+          PendingSkillDeletionChoice = {
+            intent:
+              "CHOOSE_SKILL_DELETION_ACTION",
+            skillId:
+              skill.id,
+            skillName:
+              skill.name,
+          };
+
+        pendingSkillDeletionChoices.set(
+          conversationKey,
+          choiceAction
+        );
+
+        lastPendingSkillDeletionChoice = {
+          conversationKey,
+          action:
+            choiceAction,
+        };
+
+        return res.json({
+          success: true,
+          data: {
+            reply: [
+              `I found the skill **"${skill.name}"** (ID ${skill.id}).`,
+              "",
+              "What would you like to do?",
+              "",
+              `**1.** Delete **"${skill.name}"** from the system skill catalog`,
+              `**2.** Remove **"${skill.name}"** from a specific team member`,
+              "",
+              "Please reply with **1** or **2**.",
+            ].join("\n"),
+            intent:
+              "CHOOSE_SKILL_DELETION_ACTION",
+            requiresConfirmation:
+              false,
+            preview:
+              choiceAction,
+          },
+        });
+      }
 
 
+      /* ------------------------------------------------------------------ */
+      /* START DEPARTMENT DELETION                                          */
+      /* ------------------------------------------------------------------ */
 
-     if (
-  isPersonUpdateRequest(
-    message
-  )
-) {
-  const personUpdate =
-    await preparePersonUpdate(
-      message
-    );
+      if (
+        isDepartmentDeletionRequest(
+          message
+        )
+      ) {
+        const departmentName =
+          extractDepartmentDeletionName(
+            message
+          );
 
-  setPendingPersonUpdate(
-    conversationKey,
-    personUpdate
-  );
+        if (!departmentName) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                "Please provide the name of the department you want to delete.",
+              intent:
+                "DELETE_DEPARTMENT",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
 
-  return res.json({
-    success: true,
-    data: {
-      reply:
-        formatPersonUpdatePreview(
+        const department =
+          await findDepartmentByName(
+            departmentName
+          );
+
+        if (!department) {
+          return res.json({
+            success: true,
+            data: {
+              reply:
+                `I couldn't find a department named **${departmentName}**.`,
+              intent:
+                "DELETE_DEPARTMENT",
+              requiresConfirmation:
+                false,
+            },
+          });
+        }
+
+        const pendingDeletion:
+          PendingCatalogDeletionAction = {
+            intent:
+              "DELETE_DEPARTMENT",
+            departmentId:
+              department.id,
+            departmentName:
+              department.name,
+          };
+
+        pendingCatalogDeletionActions.set(
+          conversationKey,
+          pendingDeletion
+        );
+
+        lastPendingCatalogDeletion = {
+          conversationKey,
+          action:
+            pendingDeletion,
+        };
+
+        return res.json({
+          success: true,
+          data: {
+            reply: [
+              `I found **"${department.name}"** (ID ${department.id}).`,
+              "",
+              `Do you want to delete the department **"${department.name}"**?`,
+              "",
+              "Please confirm **yes / no**.",
+            ].join("\n"),
+            intent:
+              "DELETE_DEPARTMENT",
+            requiresConfirmation:
+              true,
+            preview:
+              pendingDeletion,
+          },
+        });
+      }
+
+
+      /* ------------------------------------------------------------------ */
+      /* START CATALOG CREATION                                             */
+      /* ------------------------------------------------------------------ */
+
+      if (
+        isSkillCreationRequest(message) ||
+        isDepartmentCreationRequest(message)
+      ) {
+        const catalogCreation =
+          await prepareCatalogCreation(
+            message
+          );
+
+        pendingCatalogCreationActions.set(
+          conversationKey,
+          catalogCreation
+        );
+
+        lastPendingCatalogCreation = {
+          conversationKey,
+          action:
+            catalogCreation,
+        };
+
+        if (
+          catalogCreation.intent ===
+          "CREATE_SKILL"
+        ) {
+          return res.json({
+            success: true,
+            data: {
+              reply: [
+                "✨ **Create Skill**",
+                "",
+                `I can create the skill **${catalogCreation.name}**.`,
+                "",
+                "This is a preview only — **no changes have been made yet**.",
+                "",
+                "Would you like me to create this skill?",
+              ].join("\n"),
+              intent:
+                "CREATE_SKILL",
+              requiresConfirmation:
+                true,
+              preview:
+                catalogCreation,
+            },
+          });
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            reply: [
+              "✨ **Create Department**",
+              "",
+              `I can create the department **${catalogCreation.name}**.`,
+              "",
+              "This is a preview only — **no changes have been made yet**.",
+              "",
+              "Would you like me to create this department?",
+            ].join("\n"),
+            intent:
+              "CREATE_DEPARTMENT",
+            requiresConfirmation:
+              true,
+            preview:
+              catalogCreation,
+          },
+        });
+      }
+
+
+      /* ------------------------------------------------------------------ */
+      /* START PERSON UPDATE                                                */
+      /* ------------------------------------------------------------------ */
+
+      if (
+        isPersonUpdateRequest(
+          message
+        )
+      ) {
+        const personUpdate =
+          await preparePersonUpdate(
+            message
+          );
+
+        setPendingPersonUpdate(
+          conversationKey,
           personUpdate
-        ),
-      intent:
-        "UPDATE_PERSON",
-      requiresConfirmation:
-        true,
-      preview:
-        personUpdate,
-    },
-  });
-}
+        );
+
+        return res.json({
+          success: true,
+          data: {
+            reply:
+              formatPersonUpdatePreview(
+                personUpdate
+              ),
+            intent:
+              "UPDATE_PERSON",
+            requiresConfirmation:
+              true,
+            preview:
+              personUpdate,
+          },
+        });
+      }
       function isPersonDeletionRequest(message: string): boolean {
   const text = normalizeText(message);
 
