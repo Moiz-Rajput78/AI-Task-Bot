@@ -542,6 +542,13 @@ let lastPendingTaskCreation: {
   action: PendingTaskAction;
 } | null = null;
 
+// Keep the most recent person-update confirmation outside the
+// conversation map for clients that change conversation identifiers.
+let lastPendingPersonUpdate: {
+  conversationKey: string;
+  action: PendingPersonUpdateAction;
+} | null = null;
+
 /* -------------------------------------------------------------------------- */
 /* CONVERSATION KEY                                                           */
 /* -------------------------------------------------------------------------- */
@@ -596,6 +603,38 @@ function deletePendingTaskUpdate(
     lastPendingTaskUpdate = null;
   }
 }
+
+function setPendingPersonUpdate(
+  conversationKey: string,
+  action: PendingPersonUpdateAction
+): void {
+  pendingPersonUpdateActions.set(
+    conversationKey,
+    action
+  );
+
+  lastPendingPersonUpdate = {
+    conversationKey,
+    action,
+  };
+}
+
+function deletePendingPersonUpdate(
+  conversationKey: string
+): void {
+  pendingPersonUpdateActions.delete(
+    conversationKey
+  );
+
+  if (
+    lastPendingPersonUpdate?.conversationKey ===
+    conversationKey
+  ) {
+    lastPendingPersonUpdate = null;
+  }
+}
+
+
 
 function setPendingBulkTaskUpdate(
   conversationKey: string,
@@ -1222,16 +1261,23 @@ function extractPersonUpdateName(
   message: string
 ): string | null {
   const patterns = [
-    /\badd\s+.+?\s+to\s+(.+?)['’]?s?\s+skills(?:\?|$)/i,
-    /\bremove\s+.+?\s+from\s+(.+?)['’]?s?\s+skills(?:\?|$)/i,
-    /\bchange\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
-    /\bset\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
-    /\bupdate\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
-    /\bmark\s+(.+?)\s+as\s+(?:available|unavailable|busy|on leave|partially available)(?:\?|$)/i,
-    /\bmake\s+(.+?)\s+(?:available|unavailable|inactive|active)(?:\?|$)/i,
-    /\bdeactivate\s+(.+?)(?:\?|$)/i,
-    /\bactivate\s+(.+?)(?:\?|$)/i,
-  ];
+  /\badd\s+.+?\s+to\s+(.+?)['’]?s?\s+skills(?:\?|$)/i,
+  /\bremove\s+.+?\s+from\s+(.+?)['’]?s?\s+skills(?:\?|$)/i,
+  /\bchange\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
+  /\bset\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
+  /\bupdate\s+(.+?)['’]?s?\s+department\s+to\s+.+?(?:\?|$)/i,
+
+  /\bmark\s+(.+?)\s+as\s+(?:available|unavailable|busy|on leave|partially available)(?:\?|$)/i,
+
+  /\bmake\s+(.+?)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)(?:\?|$)/i,
+
+  /\b(?:change|update|set)\s+(.+?)\s+(?:status|state)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)(?:\?|$)/i,
+
+  /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+(.+?)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)(?:\?|$)/i,
+
+  /\bdeactivate\s+(.+?)(?:\?|$)/i,
+  /\bactivate\s+(.+?)(?:\?|$)/i,
+];
 
   for (const pattern of patterns) {
     const match = message.match(pattern);
@@ -1264,16 +1310,23 @@ function isPersonUpdateRequest(message: string): boolean {
   }
 
   const updatePatterns = [
-    /\badd\s+.+?\s+to\s+.+?['’]?s?\s+skills\b/i,
-    /\bremove\s+.+?\s+from\s+.+?['’]?s?\s+skills\b/i,
-    /\bchange\s+.+?['’]?s?\s+department\s+to\b/i,
-    /\bset\s+.+?['’]?s?\s+department\s+to\b/i,
-    /\bupdate\s+.+?['’]?s?\s+department\s+to\b/i,
-    /\bmark\s+.+?\s+as\s+(?:available|unavailable|busy|on leave|partially available)\b/i,
-    /\bmake\s+.+?\s+(?:available|unavailable|inactive|active)\b/i,
-    /\bdeactivate\s+.+/i,
-    /\bactivate\s+.+/i,
-  ];
+  /\badd\s+.+?\s+to\s+.+?['’]?s?\s+skills\b/i,
+  /\bremove\s+.+?\s+from\s+.+?['’]?s?\s+skills\b/i,
+  /\bchange\s+.+?['’]?s?\s+department\s+to\b/i,
+  /\bset\s+.+?['’]?s?\s+department\s+to\b/i,
+  /\bupdate\s+.+?['’]?s?\s+department\s+to\b/i,
+
+  /\bmark\s+.+?\s+as\s+(?:available|unavailable|busy|on leave|partially available)\b/i,
+
+  /\bmake\s+.+?\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)\b/i,
+
+  /\b(?:change|update|set)\s+.+?\s+(?:status|state)\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)\b/i,
+
+  /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+.+?\s+(?:to|as)\s+(?:available|unavailable|busy|on leave|partially available|inactive|active)\b/i,
+
+  /\bdeactivate\s+.+/i,
+  /\bactivate\s+.+/i,
+];
 
   return updatePatterns.some((pattern) =>
     pattern.test(text)
@@ -1543,6 +1596,73 @@ async function preparePersonUpdate(
     };
   }
 
+
+  /* ---------------------------------------------------------------------- */
+/* EXPLICIT STATUS                                                        */
+/* ---------------------------------------------------------------------- */
+
+const statusMatch =
+  message.match(
+    /\b(?:change|update|set)\s+(.+?)\s+(?:status|state)\s+(?:to|as)\s+(available|unavailable|busy|on leave|partially available|inactive|active)\b/i
+  ) ||
+  message.match(
+    /\b(?:change|update|set)\s+(?:the\s+)?status\s+of\s+(.+?)\s+(?:to|as)\s+(available|unavailable|busy|on leave|partially available|inactive|active)\b/i
+  );
+
+if (statusMatch?.[2]) {
+  const requestedStatus =
+    statusMatch[2].toLowerCase();
+
+  /*
+   * "active" / "inactive" control the account status.
+   */
+  if (
+    requestedStatus === "active" ||
+    requestedStatus === "inactive"
+  ) {
+    const nextActive =
+      requestedStatus === "active";
+
+    return {
+      intent: "UPDATE_PERSON",
+      personId: person.id,
+      personName: person.fullName,
+      field: "active",
+      value: nextActive,
+      displayValue: nextActive
+        ? "Active"
+        : "Inactive",
+      oldValue: person.isActive
+        ? "Active"
+        : "Inactive",
+    };
+  }
+
+  /*
+   * Availability statuses use the Availability enum.
+   */
+  const availabilityValue: Availability =
+    requestedStatus === "available"
+      ? "AVAILABLE"
+      : requestedStatus === "unavailable"
+      ? "INACTIVE"
+      : requestedStatus === "busy"
+      ? "BUSY"
+      : requestedStatus === "on leave"
+      ? "ON_LEAVE"
+      : "PARTIALLY_AVAILABLE";
+
+  return {
+    intent: "UPDATE_PERSON",
+    personId: person.id,
+    personName: person.fullName,
+    field: "availability",
+    value: availabilityValue,
+    displayValue: availabilityValue,
+    oldValue: person.availability,
+  };
+}
+
   /* ---------------------------------------------------------------------- */
   /* AVAILABILITY                                                            */
   /* ---------------------------------------------------------------------- */
@@ -1606,10 +1726,10 @@ async function preparePersonUpdate(
   /* ACTIVE / INACTIVE                                                       */
   /* ---------------------------------------------------------------------- */
 
-  if (
-    /\bdeactivate\s+/i.test(text) ||
-    /\bmake\s+.+?\s+inactive\b/i.test(text)
-  ) {
+ if (
+  /\bdeactivate\s+/i.test(text) ||
+  /\bmake\s+.+?\s+(?:as\s+)?inactive\b/i.test(text)
+){
     return {
       intent: "UPDATE_PERSON",
       personId: person.id,
@@ -1623,10 +1743,10 @@ async function preparePersonUpdate(
     };
   }
 
-  if (
-    /\bactivate\s+/i.test(text) ||
-    /\bmake\s+.+?\s+active\b/i.test(text)
-  ) {
+ if (
+  /\bactivate\s+/i.test(text) ||
+  /\bmake\s+.+?\s+(?:as\s+)?active\b/i.test(text)
+) {
     return {
       intent: "UPDATE_PERSON",
       personId: person.id,
@@ -4524,20 +4644,24 @@ const effectivePendingBulkTaskUpdate =
           ? lastPendingTaskCreation?.action
           : undefined);
 
-      const personUpdateKey =
-        pendingPersonUpdate
-          ? conversationKey
-          : getPendingActionKey(
-              pendingPersonUpdateActions,
-              conversationKey
-            );
+     const personUpdateKey =
+  pendingPersonUpdate
+    ? conversationKey
+    : getPendingActionKey(
+        pendingPersonUpdateActions,
+        conversationKey
+      );
 
-      const effectivePendingPersonUpdate =
-        pendingPersonUpdate ||
-        (personUpdateKey
-          ? pendingPersonUpdateActions.get(personUpdateKey)
-          : undefined);
-
+const effectivePendingPersonUpdate =
+  pendingPersonUpdate ||
+  (personUpdateKey
+    ? pendingPersonUpdateActions.get(
+        personUpdateKey
+      )
+    : undefined) ||
+  (isConfirmation(message)
+    ? lastPendingPersonUpdate?.action
+    : undefined);
       console.log(
         "AI CONFIRMATION STATE:",
         JSON.stringify({
@@ -4594,9 +4718,11 @@ const effectivePendingBulkTaskUpdate =
         );
         lastPendingTaskUpdate = null;
 
-        pendingPersonUpdateActions.delete(
-          conversationKey
-        );
+       deletePendingPersonUpdate(
+  conversationKey
+);
+
+lastPendingPersonUpdate = null;
 
         deletePendingBulkTaskUpdate(
   conversationKey
@@ -5335,10 +5461,10 @@ if (
             message
           );
 
-        pendingPersonUpdateActions.set(
-          conversationKey,
-          personUpdate
-        );
+       setPendingPersonUpdate(
+  conversationKey,
+  personUpdate
+);
 
         return res.json({
           success: true,
